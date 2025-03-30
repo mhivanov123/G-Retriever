@@ -27,8 +27,9 @@ class LLM(torch.nn.Module):
         self.max_new_tokens = args.max_new_tokens
 
         print('Loading LLAMA')
+        max_mem = {0: '32GiB'}#{i: f'{size}GiB' for i, size in enumerate(args.max_memory)}
         kwargs = {
-            "max_memory": {i: f'{size}GiB' for i, size in enumerate(args.max_memory)},
+            "max_memory": max_mem,
             "device_map": "auto",
             "revision": "main",
         }
@@ -77,7 +78,7 @@ class LLM(torch.nn.Module):
     def device(self):
         return list(self.parameters())[0].device
 
-    def maybe_autocast(self, dtype=torch.bfloat16):
+    def maybe_autocast(self, dtype=torch.float16):
         # if on cpu, don't use autocast
         # if on gpu, use autocast with dtype if provided, otherwise use torch.float16
         enable_autocast = self.device != torch.device("cpu")
@@ -138,15 +139,17 @@ class LLM(torch.nn.Module):
         return outputs.loss
 
     def inference(self, samples):
-
         # encode description and questions
         questions = self.tokenizer(samples["question"], add_special_tokens=False)
         descriptions = self.tokenizer(samples["desc"], add_special_tokens=False)
 
         # encode special tokens
         eos_user_tokens = self.tokenizer(EOS_USER, add_special_tokens=False)
-        bos_embeds = self.word_embedding(self.tokenizer(BOS, add_special_tokens=False, return_tensors='pt').input_ids[0])
-        pad_embeds = self.word_embedding(torch.tensor(self.tokenizer.pad_token_id)).unsqueeze(0)
+        # Move tokenizer outputs to correct device
+        bos_token_ids = self.tokenizer(BOS, add_special_tokens=False, return_tensors='pt').input_ids[0].to(self.device)
+        bos_embeds = self.word_embedding(bos_token_ids)
+        pad_token = torch.tensor(self.tokenizer.pad_token_id, device=self.device)
+        pad_embeds = self.word_embedding(pad_token).unsqueeze(0)
 
         batch_size = len(samples['id'])
         batch_inputs_embeds = []
@@ -154,7 +157,9 @@ class LLM(torch.nn.Module):
         for i in range(batch_size):
             # Add bos & eos token
             input_ids = descriptions.input_ids[i][:self.max_txt_len] + questions.input_ids[i] + eos_user_tokens.input_ids
-            inputs_embeds = self.word_embedding(torch.tensor(input_ids).to(self.model.device))
+            # Move input_ids to device before embedding
+            input_ids = torch.tensor(input_ids, device=self.device)
+            inputs_embeds = self.word_embedding(input_ids)
             inputs_embeds = torch.cat([bos_embeds, inputs_embeds], dim=0)
             batch_inputs_embeds.append(inputs_embeds)
             batch_attention_mask.append([1] * inputs_embeds.shape[0])
@@ -166,24 +171,25 @@ class LLM(torch.nn.Module):
             batch_inputs_embeds[i] = torch.cat([pad_embeds.repeat(pad_length, 1), batch_inputs_embeds[i]])
             batch_attention_mask[i] = [0]*pad_length + batch_attention_mask[i]
 
-        inputs_embeds = torch.stack(batch_inputs_embeds, dim=0).to(self.model.device)
-        attention_mask = torch.tensor(batch_attention_mask).to(self.model.device)
+        inputs_embeds = torch.stack(batch_inputs_embeds, dim=0).to(self.device)
+        attention_mask = torch.tensor(batch_attention_mask, device=self.device)
 
         with self.maybe_autocast():
             outputs = self.model.generate(
                 inputs_embeds=inputs_embeds,
                 max_new_tokens=self.max_new_tokens,
                 attention_mask=attention_mask,
-                # do_sample=True,
-                use_cache=True  # IMPORTANT!
+                use_cache=True
             )
         pred = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
-        return {'id': samples['id'],
-                'pred': pred,
-                'label': samples['label'],
-                'question': samples['question'],
-                'desc': samples['desc'], }
+        return {
+            'id': samples['id'],
+            'pred': pred,
+            'label': samples['label'],
+            'question': samples['question'],
+            'desc': samples['desc'],
+        }
 
     def print_trainable_params(self):
         trainable_params = 0

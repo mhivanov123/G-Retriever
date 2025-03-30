@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from pcst_fast import pcst_fast
 from torch_geometric.data.data import Data
+import sys
 
 
 def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_e=3, cost_e=0.5):
@@ -15,6 +16,11 @@ def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_
     num_clusters = 1
     pruning = 'gw'
     verbosity_level = 0
+
+    # Convert tensors to full precision (FP32) and ensure they're on the same device
+    q_emb = q_emb.float()  # Convert from half to float
+    graph.x = graph.x.float()  # Convert graph embeddings to float too
+    
     if topk > 0:
         n_prizes = torch.nn.CosineSimilarity(dim=-1)(q_emb, graph.x)
         topk = min(topk, graph.num_nodes)
@@ -88,7 +94,7 @@ def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_
     desc = n.to_csv(index=False)+'\n'+e.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
 
     mapping = {n: i for i, n in enumerate(selected_nodes.tolist())}
-
+    
     x = graph.x[selected_nodes]
     edge_attr = graph.edge_attr[selected_edges]
     src = [mapping[i] for i in edge_index[0].tolist()]
@@ -97,3 +103,223 @@ def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, num_nodes=len(selected_nodes))
 
     return data, desc
+
+
+def retrieval_via_shortest_paths(graph, q_nodes, a_nodes, textual_nodes, textual_edges):
+    """
+    Extract shortest paths between question and answer entities and form a subgraph.
+    
+    Args:
+        graph: PyG Data object containing the full graph
+        q_nodes: List of strings matching node text in textual_nodes['node_attr']
+        a_nodes: List of strings matching node text in textual_nodes['node_attr']
+        textual_nodes: DataFrame containing node text information
+        textual_edges: DataFrame containing edge text information
+    
+    Returns:
+        data: PyG Data object containing the subgraph
+        desc: String description of the subgraph
+    """
+    
+    if len(textual_nodes) == 0 or len(textual_edges) == 0:
+        print("Empty textual nodes or edges", flush=True)
+        sys.stdout.flush()
+        desc = textual_nodes.to_csv(index=False) + '\n' + textual_edges.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
+        graph = Data(x=graph.x, edge_index=graph.edge_index, edge_attr=graph.edge_attr, num_nodes=graph.num_nodes)
+        return graph, desc
+
+    # Convert input nodes to lowercase
+    q_nodes = [str(n).lower() for n in q_nodes]
+    a_nodes = [str(n).lower() for n in a_nodes]
+    
+    # Map string identifiers to node indices (with lowercase comparison)
+    node_to_idx = {str(row['node_attr']).lower(): idx for idx, row in textual_nodes.iterrows()}
+    
+    # Convert string nodes to indices, skipping any that aren't found
+    q_node_indices = [node_to_idx[n] for n in q_nodes if n in node_to_idx]
+    a_node_indices = [node_to_idx[n] for n in a_nodes if n in node_to_idx]
+    
+    print(f"q_node_indices: {q_node_indices}", flush=True)
+    sys.stdout.flush()
+    
+    # If no valid nodes found, return full graph
+    if not q_node_indices or not a_node_indices:
+        print('no valid nodes found')
+        desc = textual_nodes.to_csv(index=False) + '\n' + textual_edges.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
+        graph = Data(x=graph.x, edge_index=graph.edge_index, edge_attr=graph.edge_attr, num_nodes=graph.num_nodes)
+        return graph, desc
+
+    # Convert edge_index to adjacency list format for easier path finding
+    adj_list = {}
+    for i, (src, dst) in enumerate(graph.edge_index.T.tolist()):
+        if src not in adj_list:
+            adj_list[src] = []
+        if dst not in adj_list:
+            adj_list[dst] = []
+        adj_list[src].append((dst, i))
+        adj_list[dst].append((src, i))  # Add reverse edge for undirected graph
+
+    def bfs_shortest_path(start, end):
+        if start == end:
+            return [], []
+        
+        visited = {start}
+        queue = [(start, [], [])]  # (node, path_nodes, path_edges)
+        
+        while queue:
+            current, path_nodes, path_edges = queue.pop(0)
+            
+            for next_node, edge_idx in adj_list.get(current, []):
+                if next_node == end:
+                    return path_nodes + [current, next_node], path_edges + [edge_idx]
+                
+                if next_node not in visited:
+                    visited.add(next_node)
+                    queue.append((next_node, path_nodes + [current], path_edges + [edge_idx]))
+        
+        return [], []  # No path found
+
+    # Collect all nodes and edges in shortest paths
+    selected_nodes = set()
+    selected_edges = set()
+    
+    for q_node in q_node_indices:
+        for a_node in a_node_indices:
+            path_nodes, path_edges = bfs_shortest_path(q_node, a_node)
+            selected_nodes.update(path_nodes)
+            selected_edges.update(path_edges)
+
+    print(selected_nodes)
+    print(selected_edges)
+
+    selected_nodes = list(selected_nodes)
+    selected_edges = list(selected_edges)
+
+    if not selected_nodes or not selected_edges:
+        desc = textual_nodes.to_csv(index=False) + '\n' + textual_edges.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
+        graph = Data(x=graph.x, edge_index=graph.edge_index, edge_attr=graph.edge_attr, num_nodes=graph.num_nodes)
+        return graph, desc
+
+    # Create mapping for new node indices
+    mapping = {n: i for i, n in enumerate(selected_nodes)}
+
+    # Create new graph with selected nodes and edges
+    x = graph.x[selected_nodes]
+    edge_attr = graph.edge_attr[selected_edges]
+    edge_index = graph.edge_index[:, selected_edges]
+    
+    # Remap node indices
+    src = [mapping[i.item()] for i in edge_index[0]]
+    dst = [mapping[i.item()] for i in edge_index[1]]
+    edge_index = torch.LongTensor([src, dst])
+
+    # Create description
+    n = textual_nodes.iloc[selected_nodes]
+    e = textual_edges.iloc[selected_edges]
+    desc = n.to_csv(index=False) + '\n' + e.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
+
+    # Create new Data object
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, num_nodes=len(selected_nodes))
+
+    return data, desc
+
+def get_bfs_supervision(graph, start_nodes, target_nodes, textual_nodes):
+    """
+    Extract BFS layers containing nodes and edges that are part of shortest paths to targets.
+    Each layer represents valid nodes/edges at that distance from start nodes.
+    
+    Args:
+        graph: PyG Data object containing the full graph
+        start_nodes: List of starting node indices
+        target_nodes: List of target node indices
+        textual_nodes: DataFrame containing node text information
+    
+    Returns:
+        bfs_layers: List of sets, where each set contains (edge_idx, node_idx) pairs
+        success: Boolean indicating if any target was reached
+    """
+    start_nodes = [str(n).lower() for n in start_nodes]
+    target_nodes = [str(n).lower() for n in target_nodes]
+    
+    # Map string identifiers to node indices (with lowercase comparison)
+    node_to_idx = {str(row['node_attr']).lower(): idx for idx, row in textual_nodes.iterrows()}
+    
+    # Convert string nodes to indices, skipping any that aren't found
+    start_nodes = [node_to_idx[n] for n in start_nodes if n in node_to_idx]
+    target_nodes = [node_to_idx[n] for n in target_nodes if n in node_to_idx]
+
+    adj_list = {}
+    for i, (src, dst) in enumerate(graph.edge_index.T.tolist()):
+        if src not in adj_list:
+            adj_list[src] = []
+        if dst not in adj_list:
+            adj_list[dst] = []
+        adj_list[src].append((dst, i))
+        #adj_list[dst].append((src, i))  # Add reverse edge for undirected graph
+
+    def bfs_shortest_path(start, end):
+        if start == end:
+            return [], []
+        
+        visited = {start}
+        queue = [(start, [], [])]  # (node, path_nodes, path_edges)
+        
+        while queue:
+            current, path_nodes, path_edges = queue.pop(0)
+            
+            for next_node, edge_idx in adj_list.get(current, []):
+                if next_node == end:
+                    return path_nodes + [current, next_node], path_edges + [edge_idx]
+                
+                if next_node not in visited:
+                    visited.add(next_node)
+                    queue.append((next_node, path_nodes + [current], path_edges + [edge_idx]))
+        
+        return [], []  # No path found
+    
+
+    # Collect all nodes and edges in shortest paths
+    selected_nodes = set()
+    selected_edges = set()
+    
+    # Find shortest paths from each start node to each target node
+    success = False
+    for start_node in start_nodes:
+        for target_node in target_nodes:
+            path_nodes, path_edges = bfs_shortest_path(start_node, target_node)
+            if path_nodes:  # If path was found
+                success = True
+                selected_nodes.update(path_nodes)
+                selected_edges.update(path_edges)
+    
+    if not success:
+        return [], False
+
+    # Build BFS layers from valid nodes/edges
+    bfs_layers = []
+    visited = set(start_nodes)
+    current_layer = {(None, node) for node in start_nodes}  # First layer is just start nodes
+    
+    while current_layer:
+        next_layer = set()
+        
+        for _, current in current_layer:
+            # Get all edges from current node
+            edges = (graph.edge_index[0] == current).nonzero().squeeze(-1)
+            
+            for edge_idx in edges:
+                edge_idx = edge_idx.item()
+                next_node = graph.edge_index[1, edge_idx].item()
+                
+                # Only include nodes and edges that are part of shortest paths
+                if next_node not in visited and next_node in selected_nodes and edge_idx in selected_edges:
+                    next_layer.add((edge_idx, next_node))
+                    visited.add(next_node)
+        
+        if next_layer:
+            bfs_layers.append(next_layer)
+            current_layer = next_layer
+        else:
+            break
+
+    return bfs_layers, success

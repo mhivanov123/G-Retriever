@@ -6,8 +6,18 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 from torch.utils.data import DataLoader
 import numpy as np
+import os
 
-pretrained_repo = 'sentence-transformers/all-roberta-large-v1'
+# Define the paths for storing HuggingFace assets relative to project root
+HF_DIR = "hf"
+HF_MODELS_DIR = os.path.join(HF_DIR, "models")
+HF_DATASETS_DIR = os.path.join(HF_DIR, "datasets")
+os.makedirs(HF_DIR, exist_ok=True)
+os.makedirs(HF_MODELS_DIR, exist_ok=True)
+os.makedirs(HF_DATASETS_DIR, exist_ok=True)
+
+#pretrained_repo = 'sentence-transformers/all-roberta-large-v1'
+pretrained_repo = os.path.join(HF_MODELS_DIR, 'all-roberta-large-v1')
 batch_size = 1024  # Adjust the batch size as needed
 
 
@@ -96,6 +106,11 @@ def load_sbert():
     model = Sentence_Transformer(pretrained_repo)
     tokenizer = AutoTokenizer.from_pretrained(pretrained_repo)
 
+    # Optimize model
+    model.half()  # Convert to FP16
+    for param in model.parameters():
+        param.requires_grad = False  # Ensure model is in inference mode
+
     # data parallel
     if torch.cuda.device_count() > 1:
         print(f'Using {torch.cuda.device_count()} GPUs')
@@ -115,7 +130,7 @@ def sber_text2embedding(model, tokenizer, device, text):
     dataset = Dataset(input_ids=encoding.input_ids, attention_mask=encoding.attention_mask)
 
     # DataLoader
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=10)
 
     # Placeholder for storing the embeddings
     all_embeddings = []
