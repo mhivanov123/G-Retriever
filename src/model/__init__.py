@@ -16,4 +16,5 @@ llama_model_path = {
     "7b_chat": "meta-llama/Llama-2-7b-chat-hf",
     "13b": "meta-llama/Llama-2-13b-hf",
     "13b_chat": "meta-llama/Llama-2-13b-chat-hf",
+    "3b_chat": "hf/models/Llama-3.2-3B-Instruct",
 }

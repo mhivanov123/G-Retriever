@@ -14,9 +14,19 @@ path_nodes = f'{path}/nodes'
 path_edges = f'{path}/edges'
 path_graphs = f'{path}/graphs'
 
+HF_DIR = "hf"
+HF_MODELS_DIR = os.path.join(HF_DIR, "models")
+HF_DATASETS_DIR = os.path.join(HF_DIR, "datasets")
+os.makedirs(HF_DIR, exist_ok=True)
+os.makedirs(HF_MODELS_DIR, exist_ok=True)
+os.makedirs(HF_DATASETS_DIR, exist_ok=True)
+webqsp_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-webqsp")
+
+
 
 def step_one():
-    dataset = load_dataset("rmanluo/RoG-webqsp")
+    #dataset = load_dataset("rmanluo/RoG-webqsp")
+    dataset = load_dataset(webqsp_dataset_path)
     dataset = concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
 
     os.makedirs(path_nodes, exist_ok=True)
@@ -43,7 +53,8 @@ def step_one():
 
 def generate_split():
 
-    dataset = load_dataset("rmanluo/RoG-webqsp")
+    #dataset = load_dataset("rmanluo/RoG-webqsp")
+    dataset = load_dataset(webqsp_dataset_path)
 
     train_indices = np.arange(len(dataset['train']))
     val_indices = np.arange(len(dataset['validation'])) + len(dataset['train'])
@@ -72,11 +83,14 @@ def generate_split():
 
 def step_two():
     print('Loading dataset...')
-    dataset = load_dataset("rmanluo/RoG-webqsp")
+    #dataset = load_dataset("rmanluo/RoG-webqsp")
+    
+    dataset = load_dataset(webqsp_dataset_path)
     dataset = concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
     questions = [i['question'] for i in dataset]
 
     model, tokenizer, device = load_model[model_name]()
+    print(device)
     text2embedding = load_text2embedding[model_name]
 
     # encode questions
@@ -91,7 +105,8 @@ def step_two():
         # nodes
         nodes = pd.read_csv(f'{path_nodes}/{index}.csv')
         edges = pd.read_csv(f'{path_edges}/{index}.csv')
-        nodes.node_attr.fillna("", inplace=True)
+        nodes['node_attr'] = nodes['node_attr'].fillna("")
+        #nodes.node_attr.fillna("", inplace=True)
         if len(nodes) == 0:
             print(f'Empty graph at index {index}')
             continue

@@ -29,9 +29,11 @@ class GraphLLM(torch.nn.Module):
         self.max_txt_len = args.max_txt_len
         self.max_new_tokens = args.max_new_tokens
 
+        max_mem = {0: '32GiB'}#{0: '80GiB', 1: '80GiB'}
+
         print('Loading LLAMA')
         kwargs = {
-            "max_memory": {0: '80GiB', 1: '80GiB'},
+            "max_memory": max_mem,
             "device_map": "auto",
             "revision": "main",
         }

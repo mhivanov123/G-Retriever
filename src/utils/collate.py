@@ -8,3 +8,13 @@ def collate_fn(original_batch):
     if 'graph' in batch:
         batch['graph'] = Batch.from_data_list(batch['graph'])
     return batch
+
+'''def collate_fn(batch):
+    # Ensure all tensors in the batch are on the same device
+    return {
+        'id': [x['id'] for x in batch],
+        'question': [x['question'] for x in batch],
+        'label': [x['label'] for x in batch],
+        'graph': [x['graph'] for x in batch],
+        'desc': [x['desc'] for x in batch],
+    }'''
