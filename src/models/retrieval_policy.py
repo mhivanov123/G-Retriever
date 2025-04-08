@@ -5,119 +5,11 @@ from torch_geometric.nn import GATConv, GCNConv
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils import subgraph
 from torch_geometric.nn.norm import GraphNorm, GraphSizeNorm
+from torch_geometric.nn.pool import global_mean_pool, global_max_pool, global_add_pool
 
-class SubgraphGNNLSTM(nn.Module):
-    """
-    A module that combines GNN processing of subgraphs with LSTM sequential updates
-    """
-    def __init__(self, node_dim, hidden_dim=256, gnn_layers=2, lstm_hidden_dim=512):
-        super().__init__()
-        
-        # GNN for processing subgraphs
-        self.gnn_layers = nn.ModuleList()
-        self.gnn_norms = nn.ModuleList()
-        
-        # First layer takes node features
-        self.gnn_layers.append(GATConv(node_dim, hidden_dim))
-        self.gnn_norms.append(nn.LayerNorm(hidden_dim))
-        
-        # Additional GNN layers
-        for _ in range(gnn_layers - 1):
-            self.gnn_layers.append(GATConv(hidden_dim, hidden_dim))
-            self.gnn_norms.append(nn.LayerNorm(hidden_dim))
-        
-        # Global pooling to get fixed-size subgraph representation
-        self.pool_mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
-        
-        # LSTM for sequential updates
-        self.lstm_hidden_dim = lstm_hidden_dim
-        self.lstm = nn.LSTM(hidden_dim, lstm_hidden_dim, batch_first=True)
-        
-        # Projection back to embedding space
-        self.projection = nn.Linear(lstm_hidden_dim, 1024)
-        
-        # Initialize LSTM hidden state
-        self.init_lstm_hidden = nn.Parameter(torch.zeros(1, 1, lstm_hidden_dim))
-        self.init_lstm_cell = nn.Parameter(torch.zeros(1, 1, lstm_hidden_dim))
-    
-    def process_subgraph(self, x, edge_index, edge_attr, node_mask):
-        """
-        Process the current subgraph with GNN layers
-        
-        Args:
-            x: Node features [num_nodes, node_dim]
-            edge_index: Edge indices [2, num_edges]
-            edge_attr: Edge features [num_edges, edge_dim]
-            node_mask: Boolean mask of nodes in the subgraph [num_nodes]
-            
-        Returns:
-            Subgraph representation [hidden_dim]
-        """
-        # Extract subgraph
-        sub_nodes = node_mask.nonzero().squeeze(-1)
-        sub_edge_index, sub_edge_attr = subgraph(
-            sub_nodes, 
-            edge_index, 
-            edge_attr=edge_attr, 
-            relabel_nodes=True,
-            num_nodes=x.size(0)
-        )
-        
-        # If subgraph is empty, return zeros
-        if sub_nodes.size(0) == 0 or sub_edge_index.size(1) == 0:
-            return torch.zeros(1, self.gnn_layers[-1].out_channels, device=x.device)
-        
-        # Get node features for the subgraph
-        sub_x = x[sub_nodes]
-        
-        # Process through GNN layers
-        h = sub_x
-        for gnn, norm in zip(self.gnn_layers, self.gnn_norms):
-            h = gnn(h, sub_edge_index, sub_edge_attr)
-            h = norm(h)
-            h = F.relu(h)
-        
-        # Global mean pooling
-        pooled = h.mean(dim=0, keepdim=True)
-        
-        # Process through MLP
-        subgraph_repr = self.pool_mlp(pooled)
-        
-        return subgraph_repr
-    
-    def update_encoding(self, current_encoding, subgraph_repr, hidden_state=None):
-        """
-        Update the encoding using LSTM with the new subgraph representation
-        
-        Args:
-            current_encoding: Current encoding [1, 1024]
-            subgraph_repr: New subgraph representation [1, hidden_dim]
-            hidden_state: Optional tuple of (hidden_state, cell_state) from previous step
-            
-        Returns:
-            Tuple of (updated_encoding, new_hidden_state)
-        """
-        # Initialize hidden state if not provided
-        if hidden_state is None:
-            h0 = self.init_lstm_hidden.expand(1, 1, self.lstm_hidden_dim).contiguous()
-            c0 = self.init_lstm_cell.expand(1, 1, self.lstm_hidden_dim).contiguous()
-        else:
-            h0, c0 = hidden_state
-        
-        # Process through LSTM
-        _, (hn, cn) = self.lstm(subgraph_repr.unsqueeze(0), (h0, c0))
-        
-        # Project back to original dimension
-        updated_encoding = self.projection(hn.squeeze(0))
-        
-        # Combine with original encoding using residual connection
-        updated_encoding = updated_encoding + current_encoding
-        
-        return updated_encoding, (hn, cn)
+
+
+
 
 def buildAdj(edge_index, edge_weight, n_node: int, aggr: str):
     '''
@@ -210,11 +102,10 @@ class GLASSConv(torch.nn.Module):
                         self.z_ratio * x0 + (1 - self.z_ratio) * x1)
         return x
 
-class RetrievalPolicy(nn.Module):
-    def __init__(self, node_dim, hidden_dim=256, num_heads=4, lstm_hidden_dim=512, z_ratio=0.8, dropout=0.2, num_layers=2):
+class SubgraphRepresentation(nn.Module):
+    def __init__(self, node_dim, hidden_dim=256, num_layers=2):
         super().__init__()
-    
-        # Add normalization layers
+
         self.subgraph_head = nn.Linear(1024, hidden_dim)
         
         self.node_subgraph_mix = nn.Linear(node_dim + hidden_dim, node_dim)
@@ -235,7 +126,90 @@ class RetrievalPolicy(nn.Module):
 
             self.node_question_mix.append(nn.Linear(hidden_dim + hidden_dim, hidden_dim))
             self.edge_question_mix.append(nn.Linear(hidden_dim + hidden_dim, hidden_dim))
-            #can we feed in a list of questions, get a list of embeddings then average or something?
+
+            self.convs.append(
+                GLASSConv(in_channels=hidden_dim,
+                     out_channels=hidden_dim,
+                     activation=nn.ReLU()))
+            
+            self.gns.append(GraphNorm(hidden_dim))
+
+        self.mean_pool = global_mean_pool
+        self.max_pool = global_max_pool
+        self.add_pool = global_add_pool
+
+        self.final_projection = nn.Linear(hidden_dim*3, hidden_dim)
+
+    
+    def forward(self, x_, edge_index, edge_attr, question_embeddings, subgraph_mask = None):
+
+        x = F.relu(self.node_input(x_)) #num_nodes x hidden_dim
+        e = F.relu(self.edge_input(edge_attr)) #num_edges x hidden_dim
+        q = F.relu(self.question_input(question_embeddings)).squeeze(0) #num_questions x hidden_dim
+
+        num_questions = q.size(0)
+        num_nodes = x.size(0)
+        num_edges = e.size(0)
+
+        for layer in range(self.num_layers):
+            
+            q_x = q.expand(num_nodes, -1) #[num_questions, num_nodes, hidden_dim]
+            x_combined = torch.cat([x, q_x], dim=1)  # [num_questions, num_nodes, 2*hidden_dim]
+            x_combined = F.relu(self.node_question_mix[layer](x_combined)) #[num_questions, num_nodes, hidden_dim]
+
+            q_edge = q.expand(num_edges, -1) #[num_questions, num_edges, hidden_dim]
+            e_combined = torch.cat([e, q_edge], dim=1) #[num_questions, num_edges, 2*hidden_dim]
+            e_combined = F.relu(self.edge_question_mix[layer](e_combined)) #[num_questions, num_edges, hidden_dim]
+
+            x = self.convs[layer](x_combined, edge_index, e_combined, subgraph_mask) #[num_questions, num_nodes, hidden_dim]  
+            x = self.gns[layer](x)
+
+        if subgraph_mask is not None:
+
+            batch = torch.zeros(num_nodes, dtype=torch.long, device=x.device)
+            subgraph_x = x[subgraph_mask]
+            subgraph_batch = torch.zeros(subgraph_x.size(0), dtype=torch.long, device=x.device)
+
+            x_mean = self.mean_pool(subgraph_x, subgraph_batch) 
+            x_max = self.max_pool(subgraph_x, subgraph_batch)
+            x_add = self.add_pool(subgraph_x, subgraph_batch)
+
+        else:
+            batch = torch.zeros(num_nodes, dtype=torch.long, device=x.device)
+            x_mean = self.mean_pool(x, batch)
+            x_max = self.max_pool(x, batch)
+            x_add = self.add_pool(x, batch)
+
+        x_combined = torch.cat([x_mean, x_max, x_add], dim=1)
+        x = self.final_projection(x_combined)
+
+        return x
+
+class RetrievalPolicy(nn.Module):
+    def __init__(self, node_dim, hidden_dim=256, num_heads=4, lstm_hidden_dim=512, z_ratio=0.8, dropout=0.2, num_layers=2):
+        super().__init__()
+    
+        # Add normalization layers
+        self.subgraph_head = nn.Linear(1024, hidden_dim)
+        
+        self.node_subgraph_mix = nn.Linear(node_dim + hidden_dim, node_dim)
+        self.input_norm = nn.LayerNorm(node_dim, eps=1e-4)
+
+        self.question_input = nn.Linear(node_dim, hidden_dim) #TEMPORARY FIXX
+        self.node_input = nn.Linear(node_dim, hidden_dim)
+        self.edge_input = nn.Linear(node_dim, hidden_dim)
+
+        self.num_layers = num_layers
+
+        self.convs = nn.ModuleList()
+        self.gns = nn.ModuleList()
+        self.node_question_mix = nn.ModuleList()
+        self.edge_question_mix = nn.ModuleList()
+
+        for _ in range(num_layers):
+
+            self.node_question_mix.append(nn.Linear(hidden_dim + hidden_dim, hidden_dim))
+            self.edge_question_mix.append(nn.Linear(hidden_dim + hidden_dim, hidden_dim))
 
             self.convs.append(
                 GLASSConv(in_channels=hidden_dim,
@@ -294,3 +268,194 @@ class RetrievalPolicy(nn.Module):
         
         return probs, state_value, x, entropy
         
+
+class RetrievalPolicyTriple(nn.Module):
+    def __init__(self, node_dim, hidden_dim=256, num_heads=4, lstm_hidden_dim=512, z_ratio=0.8, dropout=0.2, num_layers=2):
+        super().__init__()
+    
+        # Add normalization layers
+        self.subgraph_head = nn.Linear(1024, hidden_dim)
+        
+        self.node_subgraph_mix = nn.Linear(node_dim + hidden_dim, node_dim)
+        self.input_norm = nn.LayerNorm(node_dim, eps=1e-4)
+
+        self.question_input = nn.Linear(node_dim//3, hidden_dim) #TEMPORARY FIXX
+        self.node_input = nn.Linear(node_dim, hidden_dim)
+
+        self.num_layers = num_layers
+
+        self.convs_subgraph = nn.ModuleList()
+        self.convs_action = nn.ModuleList()
+        
+        self.gns_subgraph = nn.ModuleList()
+        self.gns_action = nn.ModuleList()
+
+        self.subgraph_action_mix = nn.ModuleList()
+        self.node_question_mix = nn.ModuleList()
+
+        self.node_question_mix = nn.Linear(hidden_dim + hidden_dim, hidden_dim)
+
+        for _ in range(num_layers):
+
+            self.convs_subgraph.append(
+                GLASSConv(in_channels=hidden_dim,
+                     out_channels=hidden_dim,
+                     activation=nn.ReLU()))
+            
+            self.convs_action.append(
+                GLASSConv(in_channels=hidden_dim,
+                     out_channels=hidden_dim,
+                     activation=nn.ReLU()))
+            
+            self.gns_subgraph.append(GraphNorm(hidden_dim))
+            self.gns_action.append(GraphNorm(hidden_dim))
+
+            #self.subgraph_action_mix.append(nn.Linear(hidden_dim + hidden_dim, hidden_dim))
+            self.subgraph_action_mix.append(nn.Linear(hidden_dim, hidden_dim))
+
+        self.policy_head = nn.Linear(hidden_dim, 1)  # Policy output
+        
+        # Add value function head for baseline
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, x_, edge_index, question_embeddings, subgraph_mask = None, action_mask=None, action_bias=None):
+
+        x = F.relu(self.node_input(x_)) #num_nodes x hidden_dim
+        q = F.relu(self.question_input(question_embeddings)).squeeze(0) #num_questions x hidden_dim
+
+        num_nodes = x.size(0)
+
+        q_x = q.expand(num_nodes, -1) #[num_questions, num_nodes, hidden_dim]
+        x = torch.cat([x, q_x], dim=1)  # [num_questions, num_nodes, 2*hidden_dim]
+        x = F.relu(self.node_question_mix(x)) #[num_questions, num_nodes, hidden_dim]
+
+        for layer in range(self.num_layers):
+
+            x = self.convs_subgraph[layer](x, edge_index, None, subgraph_mask) #[num_questions, num_nodes, hidden_dim]  
+            x = self.gns_subgraph[layer](x)
+
+            # x_action = self.convs_action[layer](x, edge_index, None, action_mask) #[num_questions, num_nodes, hidden_dim]  
+            # x_action = self.gns_action[layer](x_action)
+
+            #x = torch.cat([x_subgraph, x_action], dim=1)
+            x = F.relu(self.subgraph_action_mix[layer](x))
+
+        logits = self.policy_head(x).squeeze(-1)
+        if action_mask is not None:
+            logits = logits.masked_fill(~action_mask, -1e9)
+
+        if action_bias is not None:
+            logits = logits + torch.log(action_bias + 1e-10)
+        
+        # Action probabilities
+        probs = F.softmax(logits, dim=-1)
+        
+        # Compute entropy for regularization (to be used in training loop)
+        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
+        
+        # Compute state value for baseline
+        state_value = self.value_head(x)[action_mask].mean()
+        
+        return probs, state_value, x, entropy
+    
+
+
+class RetrievalPolicyTriple2(nn.Module):
+    def __init__(self, node_dim, hidden_dim=256, num_heads=4, lstm_hidden_dim=512, z_ratio=0.8, dropout=0.2, num_layers=2):
+        super().__init__()
+    
+        self.question_input = nn.Linear(node_dim, hidden_dim) #TEMPORARY FIXX
+        self.node_input = nn.Linear(node_dim, hidden_dim)
+        self.edge_input = nn.Linear(node_dim, hidden_dim)
+
+        self.num_layers = num_layers
+
+        self.convs = nn.ModuleList()
+        self.gns = nn.ModuleList()
+        self.subgraph_action_mix = nn.ModuleList()
+        
+        #self.node_question_mix = nn.ModuleList()
+
+        self.node_question_mix = nn.Linear(hidden_dim + hidden_dim, hidden_dim)
+
+        for _ in range(num_layers):
+
+            self.gns.append(GraphNorm(hidden_dim))
+            self.subgraph_action_mix.append(nn.Linear(hidden_dim, hidden_dim))
+            self.convs.append(
+                GLASSConv(in_channels=hidden_dim,
+                     out_channels=hidden_dim,
+                     activation=nn.ReLU()))
+            
+        self.triple_mix = nn.Sequential(
+            nn.Linear(3*hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+
+        self.policy_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        # Add value function head for baseline
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x_, edge_index, edge_attr, question_embeddings, subgraph_mask = None, action_mask=None, action_bias=None):
+        
+        x = F.relu(self.node_input(x_)) #num_nodes x hidden_dim
+        q = F.relu(self.question_input(question_embeddings)).squeeze(0) #num_questions x hidden_dim
+        e = F.relu(self.edge_input(edge_attr)) #num_edges x hidden_dim
+        num_nodes = x.size(0)
+
+        q_x = q.expand(num_nodes, -1) #[num_questions, num_nodes, hidden_dim]
+        x = torch.cat([x, q_x], dim=1)  # [num_questions, num_nodes, 2*hidden_dim]
+        x = F.relu(self.node_question_mix(x)) #[num_questions, num_nodes, hidden_dim]
+
+        for layer in range(self.num_layers):
+
+            x = self.convs[layer](x, edge_index, e, subgraph_mask) #[num_questions, num_nodes, hidden_dim]  
+            x = self.gns[layer](x)
+            x = F.relu(self.subgraph_action_mix[layer](x))
+
+        src_nodes = edge_index[0]
+        dst_nodes = edge_index[1]
+        # 1a. Create features for the regular "triple" nodes
+        src_node_features = x[src_nodes]
+        dst_node_features = x[dst_nodes]
+
+        triple_features = torch.cat([src_node_features, e, dst_node_features], dim=1)
+        triple_features = self.triple_mix(triple_features)
+
+        logits = self.policy_head(triple_features).squeeze(-1)
+        if action_mask is not None:
+            logits = logits.masked_fill(~action_mask, -1e9)
+
+        if action_bias is not None:
+            logits = logits + torch.log(action_bias + 1e-10)
+        
+        # Action probabilities
+        probs = F.softmax(logits, dim=-1)
+        
+        # Compute entropy for regularization (to be used in training loop)
+        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
+        
+        # Compute state value for baseline
+        state_value = self.value_head(triple_features)[action_mask].max()
+        
+        return probs, state_value, triple_features, entropy
+    
+

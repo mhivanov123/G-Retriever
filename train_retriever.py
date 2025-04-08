@@ -5,6 +5,7 @@ from tqdm import tqdm
 import torch
 import json
 import pandas as pd
+import argparse
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
 
@@ -17,7 +18,7 @@ from src.utils.collate import collate_fn
 from src.utils.seed import seed_everything
 from src.utils.lr_schedule import adjust_learning_rate
 
-from src.models.retrieval_policy import RetrievalPolicy
+from src.models.retrieval_policy import RetrievalPolicy, RetrievalPolicyTriple, RetrievalPolicyTriple2
 from src.models.rl_retriever import RetrievalTrainer
 
 from src.dataset.webqsp import WebQSPDataset
@@ -52,105 +53,158 @@ def setup_logging(save_dir):
     )
     return logging.getLogger(__name__)
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train a retrieval policy network on graph data")
+    
+    # Model parameters
+    parser.add_argument("--node_dim", type=int, default=1024, help="Node embedding dimension")
+    parser.add_argument("--hidden_dim", type=int, default=256, help="Hidden dimension for GNN layers")
+    parser.add_argument("--num_heads", type=int, default=4, help="Number of attention heads")
+    parser.add_argument("--directed", type=bool, default=False, help="Whether to use directed edges")
+    # Training parameters
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
+    parser.add_argument("--num_epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--max_steps", type=int, default=100, help="Maximum steps in each episode")
+    parser.add_argument("--learning_rate", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value")
+    
+    # Teacher forcing parameters
+    parser.add_argument("--tf_start_bias", type=float, default=10.0, help="Initial teacher forcing bias")
+    parser.add_argument("--tf_end_bias", type=float, default=1.0, help="Final teacher forcing bias")
+    parser.add_argument("--tf_total_epochs", type=int, default=50, 
+                       help="Total epochs over which to anneal teacher forcing")
+    parser.add_argument("--tf_schedule", type=str, default="linear", 
+                       choices=["linear", "exp", "cosine"], help="Annealing schedule type")
+    parser.add_argument("--ppo_epochs", type=int, default=4, help="Number of PPO epochs")
+    parser.add_argument("--ppo_batch_size", type=int, default=8, help="Number of PPO batch size")
+    parser.add_argument("--curriculum", type=float, default=float('inf'), help="Curriculum for the model")
+    parser.add_argument("--curriculum_perc", type=float, default=0.2, help="Percentage of epochs to use curriculum")
+
+    # Paths and logging
+    parser.add_argument("--save_dir", type=str, default="./experiments", help="Directory to save logs and checkpoints")
+    parser.add_argument("--model_name", type=str, default="GLASS_GCN", help="Name for the model")
+    parser.add_argument("--save_every", type=int, default=1, help="Save checkpoint every N epochs")
+    parser.add_argument("--use_wandb", action="store_true", help="Whether to use wandb for logging")
+    parser.add_argument("--wandb_project", type=str, default="graph-retriever", help="Wandb project name")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--dataset", type=str, default="webqsp", help="Dataset to use")
+
+    parser.add_argument("--triple_graph", type=bool, default=False, help="Whether to use triple graph")
+    
+    # Device
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", 
+                       help="Device to use (cuda/cpu)")
+    
+    return parser.parse_args()
+
 def main():
-    # Training configuration
-    config = {
-        "node_dim": 1024,  # assuming BERT embeddings
-        "hidden_dim": 256,
-        "num_heads": 4,
-        "batch_size": 32,
-        "num_epochs": 100,
-        "max_steps": 100,
-        "episodes_per_state": 1
-    }
+    # Parse command-line arguments
+    args = parse_args()
+    
+    # Set random seed
+    seed_everything(args.seed)
     
     # Setup logging
-    logger = setup_logging("./experiments")
-    logger.info(f"Training config: {config}")
+    logger = setup_logging(args.save_dir)
+    logger.info(f"Training config: {args}")
     
     # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device)
     logger.info(f"Using device: {device}")
     
+    # Initialize wandb if requested
+    if args.use_wandb:
+        wandb.init(project=args.wandb_project, config=vars(args))
+    
     # Initialize dataset
-    dataset = WebQSPDataset() #load_dataset[args.dataset]()
+    dataset = WebQSPDataset(directed=args.directed, triple=args.triple_graph)
     idx_split = dataset.get_idx_split()
 
     train_indices = idx_split['train']
     val_indices = idx_split['val']
     
+    node_dim = args.node_dim
+    if args.triple_graph:
+        node_dim = node_dim
+
     # Initialize model and trainer
-    policy_net = RetrievalPolicy(
-        node_dim=config["node_dim"],
-        hidden_dim=config["hidden_dim"],
-        num_heads=config["num_heads"]
-    ).to(device)
-
-    model = AutoModel.from_pretrained(pretrained_repo).to(device)
-    model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(pretrained_repo)
-
-    def encoder(text):
-        # Tokenize the input text
-        tokens = tokenizer(text, padding=True, truncation=True, return_tensors='pt')
-        
-        # Move tokens to same device as model
-        tokens = {k: v.to(device) for k, v in tokens.items()}
-        
-        # Get embeddings from model
-        with torch.no_grad():
-            embeddings = model(input_ids=tokens['input_ids'], 
-                             attention_mask=tokens['attention_mask']).last_hidden_state.mean(dim=1)
-        return embeddings
-
-    trainer = RetrievalTrainer(policy_net, encoder=encoder)
+    if args.triple_graph:
+        policy_net = RetrievalPolicyTriple2(
+            node_dim=node_dim,
+            hidden_dim=args.hidden_dim,
+            num_heads=args.num_heads
+        ).to(device)
+    else:
+        policy_net = RetrievalPolicy(
+            node_dim=node_dim,
+            hidden_dim=args.hidden_dim,
+            num_heads=args.num_heads
+        ).to(device)
+    
+    trainer = RetrievalTrainer(
+        policy_net,
+        ppo_epochs=args.ppo_epochs,
+        ppo_batch_size=args.ppo_batch_size,
+        tf_start_bias=args.tf_start_bias,
+        tf_end_bias=args.tf_end_bias, 
+        tf_total_epochs=args.tf_total_epochs,
+        directed=args.directed,
+        triple_graph=args.triple_graph
+    )
+    
+    # Create checkpoint directory
+    checkpoint_dir = Path(args.save_dir) / "checkpoints" / f"{args.model_name}"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # Training loop with validation
-    num_training_steps = config["num_epochs"] * len(train_indices) * config["episodes_per_state"]
+    num_training_steps = args.num_epochs * len(train_indices)
     progress_bar = tqdm(range(num_training_steps))
     best_val_reward = float('-inf')
     
-    for epoch in range(config["num_epochs"]):
+    for epoch in range(args.num_epochs):
+        # Update current epoch in trainer for annealing calculation
+        trainer.set_current_epoch(epoch)
+        
+        # Log the current teacher bias
+        current_bias = trainer.get_current_teacher_bias()
+        logger.info(f"Epoch {epoch} - Current teacher bias: {current_bias:.4f}")
+
         # Training
         train_stats = []
         policy_net.train()
-
-        if epoch > config["num_epochs"]*0.5:
-            trainer.set_teacher_forcing(False)
-        else:
-            trainer.set_teacher_forcing(True)
-
         
         for idx in train_indices:
+            sample = dataset[idx]
 
-            for i in range(config["episodes_per_state"]):
+            #curriculum enforcement
+            if epoch <= args.num_epochs * args.curriculum_perc and 'shortest_path_nodes' in sample and len(sample['shortest_path_nodes']) > args.curriculum:
+                continue
 
+            # Move sample to device
+            graph = sample['graph'].to(device)
+            q_idx = sample['q_idx'] if 'q_idx' in sample else None
+            a_idx = sample['a_idx'] if 'a_idx' in sample else None
+            shortest_path_nodes = sample['shortest_path_nodes'] if 'shortest_path_nodes' in sample else None
 
-                sample = dataset[idx]
-                # Move batch to device
-                graph = sample['graph'].to(device)
-                q_nodes = sample['q_idx'] if 'q_idx' in sample else None
-                a_nodes = sample['a_idx'] if 'a_idx' in sample else None
-                
-                if q_nodes is None or len(q_nodes) == 0 or a_nodes is None or len(a_nodes) == 0:
-                    logger.warning("No question or answer nodes in this batch")
-                    continue
+            if not q_idx or not a_idx or not shortest_path_nodes:
+                logger.warning("No question or answer nodes in this sample")
+                continue
 
-                if graph.x.float().isnan().sum().item() > 0:
-                    logger.warning("NaN values in graph")
-                    continue
-                
-                # Run training step
-                stats = trainer.train_step(
-                    sample,
-                    max_steps=config["max_steps"]
-                )
-                
-                if stats is not None:
-                    train_stats.append(stats)
+            if graph.x.float().isnan().sum().item() > 0:
+                logger.warning("NaN values in graph")
+                continue
+            
+            # Run training step
+            stats = trainer.train_step(
+                sample,
+                max_steps=args.max_steps
+            )
+            
+            if stats is not None:
+                train_stats.append(stats)
 
-                progress_bar.update(1)
-           
+            progress_bar.update(1)
+        
         # Compute average training stats
         if train_stats:
             avg_train_stats = {
@@ -166,9 +220,11 @@ def main():
             logger.info(f"  Perc Answer Nodes Reached: {avg_train_stats['perc_answer_nodes_reached']:.2f}")
             logger.info(f"  Visited Nodes: {avg_train_stats['visited_nodes']:.2f}")
             logger.info(f"  Visited Edges: {avg_train_stats['visited_edges']:.2f}")
+            
+            if args.use_wandb:
+                wandb.log({f"train/{k}": v for k, v in avg_train_stats.items()})
         else:
             logger.warning("No successful training steps in this epoch")
-            #continue
         
         # Validation
         val_stats = []
@@ -177,37 +233,41 @@ def main():
         with torch.no_grad():
             for idx in val_indices:
                 sample = dataset[idx]
-                # Move batch to device
+                # Move sample to device
                 graph = sample['graph'].to(device)
-                q_nodes = sample['q_idx'] if 'q_entity' in sample else None
-                a_nodes = sample['a_idx'] if 'a_entity' in sample else None
+                q_nodes = sample['q_idx'] if 'q_idx' in sample else None
+                a_nodes = sample['a_idx'] if 'a_idx' in sample else None 
                 shortest_path_nodes = sample['shortest_path_nodes'] if 'shortest_path_nodes' in sample else None
                 
-                if q_nodes is None or len(q_nodes) == 0 or a_nodes is None or len(a_nodes) == 0:
+                if not args.triple_graph and (q_nodes is None or len(q_nodes) == 0 or a_nodes is None or len(a_nodes) == 0):
+                    logger.warning("No question or answer nodes in this validation sample")
                     continue
                 
                 # Get subgraph through inference
                 visited_nodes, visited_edges = trainer.inference_step(
                     sample=sample,
-                    max_steps=config["max_steps"]
+                    max_steps=args.max_steps
                 )
 
-                nodes_in_subgraph = sum(1 for node in shortest_path_nodes if node in visited_nodes)
-                nodes_not_in_subgraph = sum(1 for node in shortest_path_nodes if node not in visited_nodes)
+                # Calculate success and stats
+                nodes_in_subgraph = sum(1 for node in shortest_path_nodes if node in visited_nodes) if shortest_path_nodes else 0
+                nodes_not_in_subgraph = sum(1 for node in shortest_path_nodes if node not in visited_nodes) if shortest_path_nodes else 0
                 
-                nodes_in_subgraph_percentage = nodes_in_subgraph / len(visited_nodes)
-                nodes_not_in_subgraph_percentage = nodes_not_in_subgraph / len(visited_nodes)
+                if shortest_path_nodes:
+                    nodes_in_subgraph_percentage = nodes_in_subgraph / len(visited_nodes) if visited_nodes else 0
+                    nodes_not_in_subgraph_percentage = nodes_not_in_subgraph / len(visited_nodes) if visited_nodes else 0
+                else:
+                    nodes_in_subgraph_percentage = 0
+                    nodes_not_in_subgraph_percentage = 0
 
                 # Check if any target nodes were reached
                 success = any(node in visited_nodes for node in a_nodes)
-                if success:
-                    val_stats.append({
-                        'success': 1.0,
-                        'nodes': len(visited_nodes),
-                        'edges': len(visited_edges)
-                    })
-                else:
-                    val_stats.append({'success': 0.0, 'nodes': len(visited_nodes), 'edges': len(visited_edges)})
+                
+                val_stats.append({
+                    'success': 1.0 if success else 0.0,
+                    'nodes': len(visited_nodes),
+                    'edges': len(visited_edges)
+                })
         
         # Compute validation metrics
         if val_stats:
@@ -220,22 +280,39 @@ def main():
             logger.info(f"  Avg Nodes: {avg_val_stats['nodes']:.2f}")
             logger.info(f"  Avg Edges: {avg_val_stats['edges']:.2f}")
             
-            # Save best model based on success rate
+            if args.use_wandb:
+                wandb.log({f"val/{k}": v for k, v in avg_val_stats.items()})
+            
+            # Save model checkpoint if it's the best so far
             if avg_val_stats['success'] > best_val_reward:
                 best_val_reward = avg_val_stats['success']
-                save_path = Path("./experiments/checkpoints")
-                save_path.mkdir(parents=True, exist_ok=True)
                 
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': policy_net.state_dict(),
                     'val_success': best_val_reward,
-                    'config': config
-                }, save_path / "best_model.pt")
+                    'config': vars(args)
+                }, checkpoint_dir / "best_model.pt")
                 
                 logger.info(f"Saved new best model with validation success rate: {best_val_reward:.4f}")
+            
+            # Save regular checkpoint every save_every epochs
+            if epoch % args.save_every == 0:
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': policy_net.state_dict(),
+                    'val_success': avg_val_stats['success'],
+                    'config': vars(args)
+                }, checkpoint_dir / f"checkpoint_epoch_{epoch}.pt")
+                
+                logger.info(f"Saved checkpoint at epoch {epoch}")
         else:
             logger.warning("No successful validation steps in this epoch")
+    
+    # Final logging
+    logger.info(f"Training completed. Best validation success rate: {best_val_reward:.4f}")
+    if args.use_wandb:
+        wandb.finish()
 
 if __name__ == "__main__":
     main()

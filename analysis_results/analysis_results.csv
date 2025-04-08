@@ -1,0 +1,146 @@
+sample_id,question,success,num_nodes,num_edges,path_length,shortest_path_length,answer_nodes_reached
+3075,where is jamarcus russell from?,0,11,14,11,2,0
+3076,where was george washington carver from?,0,11,16,11,2,0
+3080,who was vice president after kennedy died?,0,11,11,11,2,0
+3083,what is my timezone in louisiana?,0,11,14,11,2,0
+3087,what town was martin luther king assassinated in?,0,11,13,11,2,0
+3088,where did edgar allan poe died?,0,11,17,11,2,0
+3093,what timezone is sweden?,0,11,20,11,2,0
+3095,what county is frederick md in?,1,11,18,11,2,1
+3097,what timezone is utah in?,0,11,13,11,2,0
+3104,where was rihanna born and raised?,0,11,13,11,2,0
+3106,where george lopez was born?,0,11,14,11,2,0
+3110,what did george orwell died of?,0,11,17,11,2,0
+3116,where did eleanor roosevelt die?,0,11,14,11,2,0
+3118,what was jesse james killed with?,0,11,13,11,2,0
+3121,who was the first dictator of the soviet union?,0,11,13,11,2,0
+3122,what is the currency of puerto rico called?,1,11,13,11,2,1
+3125,what county is brentwood tennessee in?,0,11,13,11,2,0
+3128,what language do the maasai tribe speak?,1,11,11,11,2,1
+3130,what disease did patrick swayze died from?,0,11,12,11,2,0
+3132,what capital of austria?,0,11,18,11,2,0
+3133,what type of cancer did eva peron have?,0,11,11,11,2,0
+3134,what country did buddha come from?,0,11,11,11,2,0
+3135,what county is greeley colorado in?,1,11,14,11,2,1
+3140,which country does greenland belong to?,1,11,15,11,2,1
+3142,who is willow smith mom name?,0,11,18,11,2,0
+3146,what continent does armenia belong to?,1,11,21,11,2,1
+3147,what did randy savage died of?,1,11,12,11,2,1
+3149,where did richard nixon die?,0,11,12,11,2,0
+3151,who was vice president when jfk was president?,0,11,11,11,2,0
+3152,what is serbian language called?,1,11,13,11,2,1
+3156,where is jay leno from?,0,11,20,11,2,0
+3163,where is the carpathian mountain range located?,1,11,19,11,2,1
+3167,which country was justin bieber born in?,1,11,16,11,2,1
+3171,where did francisco coronado come from?,0,11,11,11,2,0
+3173,what language does egyptian people speak?,1,11,12,11,2,1
+3176,what type of cancer did gilda radner die of?,0,11,16,11,2,0
+3181,where did dolly parton grow up?,0,11,15,11,2,0
+3185,who is gimli 's father in the hobbit?,0,11,15,11,2,0
+3190,what do portuguese people speak?,0,11,19,11,2,0
+3195,what time zone am i in california?,0,11,17,11,2,0
+3197,what time in hilo hawaii?,1,11,29,11,2,1
+3201,what year did the seahawks win the superbowl?,0,11,10,11,2,0
+3205,where did queensland get its name from?,0,11,11,11,2,0
+3214,who is emma stone father?,0,11,12,11,2,0
+3215,where was theodore roosevelt buried?,0,11,12,11,2,0
+3218,where the missouri river ends?,0,11,20,11,2,0
+3219,what type of currency do they use in thailand?,0,11,10,11,2,0
+3226,what region of the world is egypt associated with?,0,11,11,11,2,0
+3236,who did gerald ford select as his vice president when he became president?,0,11,14,11,2,0
+3237,what is the currency used in italy?,0,11,13,11,2,0
+3238,what is the capital of modern egypt?,0,11,11,11,2,0
+3242,where is laos in world map?,0,11,13,11,2,0
+3243,where is tyrese gibson from?,1,11,14,11,2,1
+3248,where was elvis costello born?,0,11,10,11,2,0
+3249,where are the gobi desert located on a map?,1,11,10,11,2,1
+3251,in which continent is germany?,0,11,12,11,2,0
+3256,what state is mount st. helens in?,1,11,26,11,2,1
+3262,what countries does the panama canal go through?,1,11,16,11,2,1
+3265,where do american bulldogs originate from?,1,11,16,11,2,1
+3267,who plays the voice of brian on family guy?,1,11,20,11,2,1
+3268,where did george w bush live as a child?,0,11,13,11,2,0
+3272,what state new york city belong to?,1,11,14,11,2,1
+3273,what was the cause of death for bruce lee?,0,11,14,11,2,0
+3275,what type of currency do they use in england?,0,11,16,11,2,0
+3280,what is the primary language of china?,1,11,13,11,2,1
+3283,where was the city of david?,1,11,13,11,2,1
+3286,what does australia use for currency?,0,11,14,11,2,0
+3289,where was martin luther king jr raised?,1,11,13,11,2,1
+3293,where did mitt romney 's parents come from?,0,11,12,11,2,0
+3309,what time zone is anaheim california?,0,11,18,11,2,0
+3319,what kind of money should i take to costa rica?,0,11,13,11,2,0
+3324,where was country singer george jones born?,0,11,21,11,2,0
+3327,what is the money of switzerland called?,0,11,16,11,2,0
+3331,what did gerald r ford die from?,0,11,12,11,2,0
+3339,what currency should you take to morocco?,0,11,13,11,2,0
+3341,what do they call money in japan?,0,11,12,11,2,0
+3347,what county is west st paul in?,0,11,13,11,2,0
+3351,who owns the portland press herald?,0,11,13,11,2,0
+3354,what airport is near arlington tx?,0,11,20,11,2,0
+3356,where did emperor hirohito live?,0,11,14,11,2,0
+3363,what are the major languages spoken in greece?,1,11,14,11,2,1
+3365,what was the first book charles dickens wrote?,0,11,12,11,2,0
+3381,what state is the steelers from?,0,11,10,11,2,0
+3383,what are the school colors for harvard university?,0,11,16,11,2,0
+3386,what was the capital city of the east roman empire?,1,11,12,11,2,1
+3394,where did giuliana rancic grow up?,1,11,11,11,2,1
+3395,what are the major cities in ukraine?,0,11,12,11,2,0
+3398,what form of currency does china have?,0,11,13,11,2,0
+3401,what country did magellan represent?,1,11,16,11,2,1
+3405,when 's the last time the steelers won the superbowl?,0,11,10,11,2,0
+3414,where does the zambezi river start?,0,11,13,11,2,0
+3415,what is the nigeria time?,0,11,12,11,2,0
+3416,where did they find jenni rivera 's body?,0,11,14,11,2,0
+3420,what killed john bonham?,0,11,13,11,2,0
+3422,what county is texarkana arkansas in?,1,11,14,11,2,1
+3428,what did alice paul accomplish?,0,11,13,11,2,0
+3430,where did hank marvin come from?,0,11,19,11,2,0
+3433,where did jovan belcher kill himself?,0,11,10,11,2,0
+3435,what time is it in texas houston right now?,0,11,17,11,2,0
+3441,where did venus williams come from?,0,11,16,11,2,0
+3443,where does the zambezi river originate?,0,11,13,11,2,0
+3449,where does name pennsylvania come from?,0,11,13,11,2,0
+3450,what kind of money do they use in germany?,0,11,10,11,2,0
+3455,who plays stephanie plum in one for the money?,0,11,19,11,2,0
+3456,what did the ancient romans speak?,0,11,11,11,2,0
+3458,where was st. lucy born?,0,11,11,11,2,0
+3460,who was the father of king george vi?,0,11,16,11,2,0
+3465,who was philip in acts chapter 8?,0,11,11,11,2,0
+3466,what the time zone in england?,0,11,16,11,2,0
+3467,what is the best currency to take to turkey?,1,11,17,11,2,1
+3475,what type of money do they use in costa rica?,0,11,13,11,2,0
+3476,what timezone is nashville tn?,0,11,15,11,2,0
+3478,where did adolf hitler die?,1,11,11,11,2,1
+3479,what is the largest nation in europe?,0,11,13,11,2,0
+3484,what was james garfield most known for?,0,11,11,11,2,0
+3486,where does robert irvine come from?,1,11,15,11,2,1
+3491,what is the second biggest state in the united states?,0,11,12,11,2,0
+3495,where did alex chilton die?,0,11,12,11,2,0
+3497,what kind of cancer did farrah fawcett die of?,0,11,12,11,2,0
+3499,what money do i use in costa rica?,0,11,13,11,2,0
+3500,what guitar did joe walsh play?,0,11,11,11,2,0
+3503,what language do most italians speak?,1,11,13,11,2,1
+3504,what money do they use in spain?,0,11,18,11,2,0
+3506,when is saint george day celebrated?,0,11,11,11,2,0
+3507,what government did the roman empire have?,0,11,11,11,2,0
+3511,where are the texas rangers playing?,0,11,13,11,2,0
+3512,what is arkansas state capitol?,0,11,11,11,2,0
+3516,where did robin cook die?,0,11,12,11,2,0
+3522,where are the new orleans hornets moving to?,1,11,11,11,2,1
+3524,where was anne boleyn executed?,0,11,17,11,2,0
+3527,where buddha come from?,0,11,10,11,2,0
+3528,what did king henry viii rule?,0,11,11,11,2,0
+3531,what russian language called?,0,11,11,11,2,0
+3532,who is in charge of libya now?,0,11,10,11,2,0
+3534,what kind of disease does montel williams have?,1,11,16,11,2,1
+3535,when is the last time the ravens won a superbowl?,0,11,11,11,2,0
+3536,where did kansas city royals come from?,0,11,10,11,2,0
+3539,where did djokovic come from?,1,11,12,11,2,1
+3540,what part of the country is new england?,0,11,15,11,2,0
+3541,what money to take to turkey?,1,11,17,11,2,1
+3545,when did liverpool fc last win the champions league?,1,11,14,11,2,1
+3547,where was st peter killed?,0,11,10,11,2,0
+3553,where did tim tebow grow up?,1,11,10,11,2,1
+3558,where did the taliban began?,1,11,11,11,2,1
+3561,what nationality is taylor lautner jacob black?,1,11,12,11,2,1
