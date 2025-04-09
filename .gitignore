@@ -68,3 +68,12 @@ output/
 wandb/
 
 .vscode/
+
+# Model files
+*.pth
+*.onnx
+*.pb
+*.savedmodel
+*.model
+*.bin
+checkpoints/
