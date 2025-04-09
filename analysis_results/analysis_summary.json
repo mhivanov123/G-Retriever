@@ -1,8 +1,0 @@
-{
-    "total_samples": 145,
-    "success_rate": 0.2689655172413793,
-    "avg_nodes": 11.0,
-    "avg_edges": 13.8,
-    "success_count": 39,
-    "failure_count": 106
-}

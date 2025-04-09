@@ -7,10 +7,6 @@ from torch_geometric.utils import subgraph
 from torch_geometric.nn.norm import GraphNorm, GraphSizeNorm
 from torch_geometric.nn.pool import global_mean_pool, global_max_pool, global_add_pool
 
-
-
-
-
 def buildAdj(edge_index, edge_weight, n_node: int, aggr: str):
     '''
         Calculating the normalized adjacency matrix.
@@ -210,6 +206,7 @@ class RetrievalPolicy(nn.Module):
 
             self.node_question_mix.append(nn.Linear(hidden_dim + hidden_dim, hidden_dim))
             self.edge_question_mix.append(nn.Linear(hidden_dim + hidden_dim, hidden_dim))
+            #can we feed in a list of questions, get a list of embeddings then average or something?
 
             self.convs.append(
                 GLASSConv(in_channels=hidden_dim,
