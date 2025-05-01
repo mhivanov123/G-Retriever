@@ -8,7 +8,7 @@ from torch_geometric.data import Data
 from src.utils.lm_modeling import load_model, load_text2embedding
 
 
-model_name = 'sbert'
+model_name = 'gte'
 path = 'dataset/webqsp'
 path_nodes = f'{path}/nodes'
 path_edges = f'{path}/edges'
@@ -25,8 +25,8 @@ webqsp_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-webqsp")
 
 
 def step_one():
-    #dataset = load_dataset("rmanluo/RoG-webqsp")
-    dataset = load_dataset(webqsp_dataset_path)
+    dataset = load_dataset("rmanluo/RoG-webqsp")
+    #dataset = load_dataset(webqsp_dataset_path)
     dataset = concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
 
     os.makedirs(path_nodes, exist_ok=True)
@@ -53,15 +53,15 @@ def step_one():
 
 def generate_split():
 
-    #dataset = load_dataset("rmanluo/RoG-webqsp")
-    dataset = load_dataset(webqsp_dataset_path)
+    dataset = load_dataset("rmanluo/RoG-webqsp")
+    #dataset = load_dataset(webqsp_dataset_path)
 
     train_indices = np.arange(len(dataset['train']))
     val_indices = np.arange(len(dataset['validation'])) + len(dataset['train'])
     test_indices = np.arange(len(dataset['test'])) + len(dataset['train']) + len(dataset['validation'])
 
     # Fix bug: remove the indices of the empty graphs from the val indices
-    val_indices = [i for i in val_indices if i != 2937]
+    #val_indices = [i for i in val_indices if i != 2937]
 
     print("# train samples: ", len(train_indices))
     print("# val samples: ", len(val_indices))
@@ -83,9 +83,7 @@ def generate_split():
 
 def step_two():
     print('Loading dataset...')
-    #dataset = load_dataset("rmanluo/RoG-webqsp")
-    
-    dataset = load_dataset(webqsp_dataset_path)
+    dataset = load_dataset("rmanluo/RoG-webqsp")
     dataset = concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
     questions = [i['question'] for i in dataset]
 
@@ -98,22 +96,79 @@ def step_two():
     q_embs = text2embedding(model, tokenizer, device, questions)
     torch.save(q_embs, f'{path}/q_embs.pt')
 
+    # 1. Pool all unique node_attr and edge_attr
+    print('Pooling unique node and edge attributes...')
+    all_node_attrs = set()
+    all_edge_attrs = set()
+    num_graphs = len(dataset)
+    for index in range(num_graphs):
+        nodes = pd.read_csv(f'{path_nodes}/{index}.csv')
+        edges = pd.read_csv(f'{path_edges}/{index}.csv')
+        all_node_attrs.update(nodes['node_attr'].fillna("").tolist())
+        all_edge_attrs.update(edges['edge_attr'].fillna("").tolist())
+
+    all_node_attrs = sorted(list(all_node_attrs))
+    all_edge_attrs = sorted(list(all_edge_attrs))
+    node_attr2idx = {attr: idx for idx, attr in enumerate(all_node_attrs)}
+    edge_attr2idx = {attr: idx for idx, attr in enumerate(all_edge_attrs)}
+
+    # 2. Filter out machine codes for embedding
+    def is_machine_code(attr):
+        return isinstance(attr, str) and (attr.startswith('m.') or attr.startswith('g.'))
+
+    # Prepare lists for embedding and mapping
+    node_attrs_to_embed = [attr for attr in all_node_attrs if not is_machine_code(attr)]
+    edge_attrs_to_embed = [attr for attr in all_edge_attrs if not is_machine_code(attr)]
+
+    print('Encoding all unique node attributes (excluding machine codes)...')
+    node_attr_embs_raw = text2embedding(model, tokenizer, device, node_attrs_to_embed)
+    print('Encoding all unique edge attributes (excluding machine codes)...')
+    edge_attr_embs_raw = text2embedding(model, tokenizer, device, edge_attrs_to_embed)
+
+    # Get embedding dimension
+    emb_dim = node_attr_embs_raw.shape[1] if len(node_attr_embs_raw.shape) > 1 else 1
+    zero_emb = torch.zeros(emb_dim, dtype=node_attr_embs_raw.dtype, device=node_attr_embs_raw.device)
+
+    # Build full embedding matrices, inserting zeros for machine codes
+    node_attr_embs = []
+    node_embed_lookup = {}
+    j = 0
+    for attr in all_node_attrs:
+        if is_machine_code(attr):
+            node_attr_embs.append(zero_emb)
+        else:
+            node_attr_embs.append(node_attr_embs_raw[j])
+            j += 1
+    node_attr_embs = torch.stack(node_attr_embs)
+
+    edge_attr_embs = []
+    j = 0
+    for attr in all_edge_attrs:
+        if is_machine_code(attr):
+            edge_attr_embs.append(zero_emb)
+        else:
+            edge_attr_embs.append(edge_attr_embs_raw[j])
+            j += 1
+    edge_attr_embs = torch.stack(edge_attr_embs)
+
+    # 3. For each subgraph, map node/edge attributes to their embedding indices and reconstruct tensors
     print('Encoding graphs...')
     os.makedirs(path_graphs, exist_ok=True)
-    for index in tqdm(range(len(dataset))):
-
-        # nodes
+    for index in tqdm(range(num_graphs)):
         nodes = pd.read_csv(f'{path_nodes}/{index}.csv')
         edges = pd.read_csv(f'{path_edges}/{index}.csv')
         nodes['node_attr'] = nodes['node_attr'].fillna("")
-        #nodes.node_attr.fillna("", inplace=True)
         if len(nodes) == 0:
             print(f'Empty graph at index {index}')
             continue
-        x = text2embedding(model, tokenizer, device, nodes.node_attr.tolist())
 
-        # edges
-        edge_attr = text2embedding(model, tokenizer, device, edges.edge_attr.tolist())
+        # Map node_attr and edge_attr to their embedding indices
+        node_indices = nodes['node_attr'].map(node_attr2idx).tolist()
+        edge_indices = edges['edge_attr'].map(edge_attr2idx).tolist()
+
+        # Gather embeddings
+        x = node_attr_embs[node_indices]
+        edge_attr = edge_attr_embs[edge_indices]
         edge_index = torch.LongTensor([edges.src.tolist(), edges.dst.tolist()])
 
         pyg_graph = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, num_nodes=len(nodes))
@@ -121,6 +176,6 @@ def step_two():
 
 
 if __name__ == '__main__':
-    step_one()
+    #step_one()
     step_two()
     generate_split()

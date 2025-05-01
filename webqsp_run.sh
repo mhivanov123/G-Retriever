@@ -6,28 +6,28 @@
 #SBATCH -o webqsp_reinforce_small_sample_freeze_then_train.log
 
 echo $SHELL
-source ~/.bashrc    
+#source ~/.bashrc    
 
 #module load anaconda/2023a-pytorch
 #module load nccl
 
-source activate g_retriever
+#source activate g_retriever
 
 #nvidia-smi
 
 echo "starting experiment"
-which python
+which python3
 
 #python -m src.dataset.preprocess.webqsp
-#python -m src.dataset.webqsp
+python -m src.dataset.webqsp
 #WANDB_MODE=disabled python train.py --dataset webqsp --model_name graph_llm --llm_model_name 3b_chat
 #WANDB_MODE=disabled python inference.py --dataset webqsp --model_name inference_llm --llm_model_name 3b_chat
-WANDB_MODE=disabled python train_retriever2.py --dataset webqsp --num_epochs 1 --max_steps 50 --learning_rate 0.001 \
-                        --directed False --triple_graph True --model_name GLASS_new_small_sample_freeze_then_train --tf_start_bias 1 \
-                        --tf_end_bias 1.0 --tf_total_epochs 1 --ppo_epochs 10 --ppo_batch_size 16 \
-                        --ppo_minibatch_size 128 --num_workers 2 --sl_epochs 1 --sl_batch_size 32 \
-                        --sl_minibatch_size 32 --hidden_dim 256 --use_pretrained_classifier \
-                        --skip_pretrain --pretrained_classifier_path /home/gridsan/mhadjiivanov/meng/G-Retriever/experiments/checkpoints/GLASS_new/SL_classifier.pt
+# WANDB_MODE=disabled python3 train_retriever2.py --dataset webqsp --num_epochs 1 --max_steps 50 --learning_rate 0.001 \
+#                         --directed False --triple_graph True --model_name GLASS_new_small_sample_freeze_then_train --tf_start_bias 1 \
+#                         --tf_end_bias 1.0 --tf_total_epochs 1 --ppo_epochs 10 --ppo_batch_size 16 \
+#                         --ppo_minibatch_size 128 --num_workers 2 --sl_epochs 1 --sl_batch_size 32 \
+#                         --sl_minibatch_size 32 --hidden_dim 256 --use_pretrained_classifier \
+#                         --skip_pretrain --pretrained_classifier_path /home/gridsan/mhadjiivanov/meng/G-Retriever/experiments/checkpoints/GLASS_new/SL_classifier.pt
 
 
 # WANDB_MODE=disabled python train_retriever2.py --dataset webqsp --num_epochs 1 --max_steps 100 --learning_rate 0.0001 \

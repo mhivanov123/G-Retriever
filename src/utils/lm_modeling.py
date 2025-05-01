@@ -1,9 +1,10 @@
 from tqdm import tqdm
-import gensim
+#import gensim
 import torch
 from torch import nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
+from sentence_transformers import SentenceTransformer
 from torch.utils.data import DataLoader
 import numpy as np
 import os
@@ -17,7 +18,8 @@ os.makedirs(HF_MODELS_DIR, exist_ok=True)
 os.makedirs(HF_DATASETS_DIR, exist_ok=True)
 
 #pretrained_repo = 'sentence-transformers/all-roberta-large-v1'
-pretrained_repo = os.path.join(HF_MODELS_DIR, 'all-roberta-large-v1')
+pretrained_repo = 'Alibaba-NLP/gte-large-en-v1.5'
+#pretrained_repo = os.path.join(HF_MODELS_DIR, 'all-roberta-large-v1')
 batch_size = 1024  # Adjust the batch size as needed
 
 
@@ -100,6 +102,15 @@ def text2embedding_word2vec(model, tokenizer, device, text):
 
     return torch.Tensor(text_vector)
 
+def load_gte():
+    model = SentenceTransformer(pretrained_repo, trust_remote_code=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+    return model, None, device
+
+def gte_text2embedding(model, tokenizer, device, text):
+    return model.encode(text, convert_to_tensor=True, batch_size=batch_size, show_progress_bar=True)
 
 def load_sbert():
 
@@ -107,7 +118,7 @@ def load_sbert():
     tokenizer = AutoTokenizer.from_pretrained(pretrained_repo)
 
     # Optimize model
-    model.half()  # Convert to FP16
+    #model.half()  # Convert to FP16
     for param in model.parameters():
         param.requires_grad = False  # Ensure model is in inference mode
 
@@ -143,8 +154,8 @@ def sber_text2embedding(model, tokenizer, device, text):
             batch = {key: value.to(device) for key, value in batch.items()}
 
             # Forward pass
-            embeddings = model(input_ids=batch["input_ids"], att_mask=batch["att_mask"])
-
+            #embeddings = model(input_ids=batch["input_ids"], att_mask=batch["att_mask"])
+            embeddings = model.encode(batch["input_ids"])
             # Append the embeddings to the list
             all_embeddings.append(embeddings)
 
@@ -196,7 +207,7 @@ load_model = {
     'sbert': load_sbert,
     'contriever': load_contriever,
     'word2vec': load_word2vec,
-
+    'gte': load_gte,
 }
 
 
@@ -204,4 +215,5 @@ load_text2embedding = {
     'sbert': sber_text2embedding,
     'contriever': contriever_text2embedding,
     'word2vec': text2embedding_word2vec,
+    'gte': gte_text2embedding,
 }

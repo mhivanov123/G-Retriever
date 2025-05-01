@@ -1,9 +1,10 @@
 import torch
 import numpy as np
-from pcst_fast import pcst_fast
+#from pcst_fast import pcst_fast
 from torch_geometric.data.data import Data
+import torch_geometric.utils as pyg_utils
 import sys
-
+import networkx as nx
 
 def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_e=3, cost_e=0.5):
     c = 0.01
@@ -323,3 +324,34 @@ def get_bfs_supervision(graph, start_nodes, target_nodes, textual_nodes):
             break
 
     return bfs_layers, success
+
+
+def shortest_path_retrieval(graph, q_nodes, a_nodes, textual_nodes, textual_edges):
+
+    q_nodes = [str(n).lower() for n in q_nodes]
+    a_nodes = [str(n).lower() for n in a_nodes]
+
+    #print(f'q_nodes: {q_nodes}')
+    #print(f'a_nodes: {a_nodes}')
+    
+    # Map string identifiers to node indices (with lowercase comparison)
+    node_to_idx = {str(row['node_attr']).lower(): idx for idx, row in textual_nodes.iterrows()}
+    
+    # Convert string nodes to indices, skipping any that aren't found
+    q_node_indices = [node_to_idx[n] for n in q_nodes if n in node_to_idx]
+    a_node_indices = [node_to_idx[n] for n in a_nodes if n in node_to_idx]
+
+    shortest_path_nodes = set(q_node_indices) | set(a_node_indices)
+    if len(shortest_path_nodes) == 0:
+        print(f'No shortest path nodes found')
+
+    G = pyg_utils.to_networkx(graph)
+    for q in q_node_indices:
+        for a in a_node_indices:
+            path = nx.shortest_path(G, source=q, target=a)
+            shortest_path_nodes.update(path)
+
+    shortest_path_nodes = list(shortest_path_nodes)
+    #print(f'Shortest path nodes: {shortest_path_nodes}')
+    return shortest_path_nodes
+

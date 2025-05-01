@@ -4,7 +4,7 @@ import pandas as pd
 from torch.utils.data import Dataset
 import datasets
 from tqdm import tqdm
-from src.dataset.utils.retrieval import retrieval_via_pcst, retrieval_via_shortest_paths, get_bfs_supervision
+from src.dataset.utils.retrieval import retrieval_via_pcst, retrieval_via_shortest_paths, get_bfs_supervision, shortest_path_retrieval
 import pickle
 
 model_name = 'sbert'
@@ -22,7 +22,7 @@ true_cached_desc = f'{path}/true_cached_desc'
 subGRAG_cached_graph = f'{path}/SubGRAG_cached_graphs'
 subGRAG_cached_desc = f'{path}/SubGRAG_cached_desc'
 
-bfs_supervision_dir = f'{path}/bfs_supervision'
+shortest_path_nodes_dir = f'{path}/shortest_path_nodes'
 
 subGRAG_embedding_graph = f'{path}/subGRAG_bfs_supervision'
 
@@ -32,11 +32,8 @@ HF_DATASETS_DIR = os.path.join(HF_DIR, "datasets")
 os.makedirs(HF_DIR, exist_ok=True)
 os.makedirs(HF_MODELS_DIR, exist_ok=True)
 os.makedirs(HF_DATASETS_DIR, exist_ok=True)
-webqsp_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-webqsp")
-
-
-
-
+#webqsp_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-webqsp")
+webqsp_dataset_path = 'rmanluo/RoG-webqsp'
 class WebQSPDataset(Dataset):
     def __init__(self, directed=False, triple=False):
         super().__init__()
@@ -51,28 +48,28 @@ class WebQSPDataset(Dataset):
         self.directed = directed
         self.triple = triple
         
-        train = pickle.load(open(f'/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/processed/train.pkl', 'rb'))
-        val = pickle.load(open(f'/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/processed/val.pkl', 'rb'))
-        test = pickle.load(open(f'/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/processed/test.pkl', 'rb'))
-        self.subgrph_rag_dataset = train + val + test
+        #train = pickle.load(open(f'/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/processed/train.pkl', 'rb'))
+        #val = pickle.load(open(f'/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/processed/val.pkl', 'rb'))
+        #test = pickle.load(open(f'/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/processed/test.pkl', 'rb'))
+        #self.subgrph_rag_dataset = train + val + test
 
-        self.id_to_index = {item['id']: index for index, item in enumerate(self.subgrph_rag_dataset)}
+        #self.id_to_index = {item['id']: index for index, item in enumerate(self.subgrph_rag_dataset)}
 
         # Load embeddings with map_location to ensure they stay on CPU
-        train_dict = torch.load('/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/emb/gte-large-en-v1.5/train.pth', 
-                               map_location=torch.device('cpu'))
-        val_dict = torch.load('/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/emb/gte-large-en-v1.5/val.pth', 
-                             map_location=torch.device('cpu'))
-        test_dict = torch.load('/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/emb/gte-large-en-v1.5/test.pth', 
-                              map_location=torch.device('cpu'))
+        #train_dict = torch.load('/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/emb/gte-large-en-v1.5/train.pth', 
+        #                       map_location=torch.device('cpu'))
+        #val_dict = torch.load('/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/emb/gte-large-en-v1.5/val.pth', 
+        #                     map_location=torch.device('cpu'))
+        #test_dict = torch.load('/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/emb/gte-large-en-v1.5/test.pth', 
+        #                      map_location=torch.device('cpu'))
 
-        self.subgraph_rag_emb_dict = {**train_dict, **val_dict, **test_dict}
+        #self.subgraph_rag_emb_dict = {**train_dict, **val_dict, **test_dict}
         
         # Convert all tensors to FP16 to save memory
-        for k, v in self.subgraph_rag_emb_dict.items():
-            for k2, v2 in v.items():
-                if isinstance(v2, torch.Tensor):
-                    self.subgraph_rag_emb_dict[k][k2] = v2.clone().half().cpu()
+        #for k, v in self.subgraph_rag_emb_dict.items():
+        #    for k2, v2 in v.items():
+        #        if isinstance(v2, torch.Tensor):
+        #            self.subgraph_rag_emb_dict[k][k2] = v2.clone().half().cpu()
 
     def subgraph_rag_entity_to_index(self, sample_id):
         subgraph_rag_id = self.id_to_index[sample_id]
@@ -95,71 +92,29 @@ class WebQSPDataset(Dataset):
         data = self.dataset[index]
         sample_id = data['id']
 
-        SGRAG_entity_to_index, SGRAG_relation_to_index = self.subgraph_rag_entity_to_index(sample_id)
-
         nodes_raw = pd.read_csv(f'{path_nodes}/{index}.csv')
         edges = pd.read_csv(f'{path_edges}/{index}.csv')
         # Convert nodes dataframe to dictionary mapping text to node id
         nodes = {str(row['node_attr']).lower(): int(row['node_id']) for _, row in nodes_raw.iterrows()}
         id_to_node = {v: k for k, v in nodes.items()}
-
-        if sample_id not in self.subgraph_rag_emb_dict:
-            return None
-
-        # Create a list to store node features
-        SG_RAG_node_features = []
-        missing_nodes = 0
-        # Process each node
-        for _, row in nodes_raw.iterrows():
-            node_text = str(row['node_attr']).lower()
-            if node_text[:2] in ['m.', 'g.']:
-                # For special nodes, use a tensor of ones in FP16
-                SG_RAG_node_features.append(torch.zeros(1024, dtype=torch.float16, device='cpu'))
-            else:
-                if node_text in SGRAG_entity_to_index:
-                    node_idx = SGRAG_entity_to_index[node_text]
-                    node_emb = self.subgraph_rag_emb_dict[sample_id]['entity_embs'][node_idx].clone()
-                    SG_RAG_node_features.append(node_emb)
-                else:
-                    missing_nodes += 1
-                    SG_RAG_node_features.append(torch.zeros(1024, dtype=torch.float16, device='cpu'))
-        
-        # Stack all node features into a single tensor
-        SG_RAG_node_features = torch.stack(SG_RAG_node_features)
-        
-        # Create a list to store edge features
-        SG_RAG_edge_features = []
-        
-        # Process each edge
-        for _, row in edges.iterrows():
-            edge_text = str(row['edge_attr']).lower()
-            edge_idx = SGRAG_relation_to_index[edge_text]
-            edge_emb = self.subgraph_rag_emb_dict[sample_id]['relation_embs'][edge_idx].clone()
-            SG_RAG_edge_features.append(edge_emb)
-        
-        # Stack all edge features into a single tensor
-        SG_RAG_edge_features = torch.stack(SG_RAG_edge_features)
         
         question = data["question"] + '?' if data["question"][-1] != '?' else data["question"]
         graph = torch.load(f'{path_graphs}/{index}.pt', map_location=torch.device('cpu'))
 
-        # Assign the FP16 features to the graph
-        graph.x = SG_RAG_node_features
-        graph.edge_attr = SG_RAG_edge_features
-
-        desc = open(f'{cached_desc}/{index}.txt', 'r').read()
+        #desc = open(f'{cached_desc}/{index}.txt', 'r').read()
         label = ('|').join(data['answer']).lower()
         
         q_entity = [str(q_node).lower() for q_node in data['q_entity']]
         a_entity = [str(a_node).lower() for a_node in data['a_entity']]
         q_idx = [nodes[q_node] for q_node in q_entity if q_node in nodes]
         a_idx = [nodes[a_node] for a_node in a_entity if a_node in nodes]
-        bfs = None
-        shortest_path_nodes = list(set(extract_node_ids(f'{true_cached_desc}/{index}.txt')) | set(q_idx) | set(a_idx))
+        shortest_path_nodes = torch.load(f'{shortest_path_nodes_dir}/{index}.pt')
+
         print(f"shortest_path_nodes: {shortest_path_nodes}")
         
         # Use the FP16 question embedding
-        q_emb = self.subgraph_rag_emb_dict[sample_id]['q_emb']
+        #q_emb = self.subgraph_rag_emb_dict[sample_id]['q_emb']
+        q_emb = self.q_embs[index]
         
         edge_id_to_row = {i: (int(row['src']), str(row['edge_attr']), int(row['dst'])) for i, row in edges.iterrows()}
 
@@ -172,12 +127,10 @@ class WebQSPDataset(Dataset):
             'question': question,
             'label': label,
             'graph': graph,
-            'desc': desc,
             'q_entity': q_entity,
             'a_entity': a_entity,
             'q_idx': q_idx,
             'a_idx': a_idx,
-            'bfs': bfs,
             'shortest_path_nodes': shortest_path_nodes,
             'node_dict': nodes,
             'id_to_node': id_to_node,
@@ -198,15 +151,15 @@ class WebQSPDataset(Dataset):
         return {'train': train_indices, 'val': val_indices, 'test': test_indices}
 
 def preprocess():
-    os.makedirs(cached_desc, exist_ok=True)
-    os.makedirs(cached_graph, exist_ok=True)
+    #os.makedirs(cached_desc, exist_ok=True)
+    #os.makedirs(cached_graph, exist_ok=True)
 
-    os.makedirs(true_cached_desc, exist_ok=True)
-    os.makedirs(true_cached_graph, exist_ok=True)
+    #os.makedirs(true_cached_desc, exist_ok=True)
+    #os.makedirs(true_cached_graph, exist_ok=True)
 
-    os.makedirs(bfs_supervision_dir, exist_ok=True)
-    #dataset = datasets.load_dataset("rmanluo/RoG-webqsp")
-    dataset = datasets.load_dataset(webqsp_dataset_path)
+    os.makedirs(shortest_path_nodes_dir, exist_ok=True)
+    dataset = datasets.load_dataset("rmanluo/RoG-webqsp")
+    #dataset = datasets.load_dataset(webqsp_dataset_path)
     dataset = datasets.concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
     
     q_embs = torch.load(f'{path}/q_embs.pt')
@@ -228,9 +181,8 @@ def preprocess():
         #torch.save(true_subg, f'{true_cached_graph}/{index}.pt')
         #open(f'{true_cached_desc}/{index}.txt', 'w').write(true_desc)
 
-
-        bfs_supervision, success = get_bfs_supervision(graph, dataset[index]['q_entity'], dataset[index]['a_entity'], nodes)
-        torch.save(bfs_supervision, f'{bfs_supervision_dir}/{index}.pt')
+        shortest_path_nodes = shortest_path_retrieval(graph, dataset[index]['q_entity'], dataset[index]['a_entity'], nodes, edges)
+        torch.save(shortest_path_nodes, f'{shortest_path_nodes_dir}/{index}.pt')
 
 def extract_node_ids(file_path):
     node_ids = []
