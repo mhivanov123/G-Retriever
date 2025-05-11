@@ -20,7 +20,7 @@ os.makedirs(HF_DATASETS_DIR, exist_ok=True)
 #pretrained_repo = 'sentence-transformers/all-roberta-large-v1'
 pretrained_repo = 'Alibaba-NLP/gte-large-en-v1.5'
 #pretrained_repo = os.path.join(HF_MODELS_DIR, 'all-roberta-large-v1')
-batch_size = 1024  # Adjust the batch size as needed
+batch_size = 512  # Adjust the batch size as needed
 
 
 # replace with the path to the word2vec file

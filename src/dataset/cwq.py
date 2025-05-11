@@ -10,7 +10,7 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 model_name = 'sbert'
-path = 'dataset/webqsp'
+path = 'dataset/cwq'
 path_nodes = f'{path}/nodes'
 path_edges = f'{path}/edges'
 path_graphs = f'{path}/graphs'
@@ -34,16 +34,16 @@ HF_DATASETS_DIR = os.path.join(HF_DIR, "datasets")
 os.makedirs(HF_DIR, exist_ok=True)
 os.makedirs(HF_MODELS_DIR, exist_ok=True)
 os.makedirs(HF_DATASETS_DIR, exist_ok=True)
-#webqsp_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-webqsp")
-webqsp_dataset_path = 'rmanluo/RoG-webqsp'
-class WebQSPDataset(Dataset):
+#cwq_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-cwq")
+cwq_dataset_path = 'rmanluo/RoG-cwq'
+class CWQDataset(Dataset):
     def __init__(self, directed=False, triple=False):
         super().__init__()
         self.prompt = 'Please answer the given question.'
         self.graph = None
         self.graph_type = 'Knowledge Graph'
         
-        dataset = datasets.load_dataset(webqsp_dataset_path)
+        dataset = datasets.load_dataset(cwq_dataset_path)
         self.dataset = datasets.concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
         self.q_embs = torch.load(f'{path}/q_embs.pt')
         
@@ -134,8 +134,8 @@ def preprocess():
     #os.makedirs(true_cached_graph, exist_ok=True)
 
     os.makedirs(shortest_path_nodes_dir, exist_ok=True)
-    dataset = datasets.load_dataset("rmanluo/RoG-webqsp")
-    #dataset = datasets.load_dataset(webqsp_dataset_path)
+    dataset = datasets.load_dataset("rmanluo/RoG-cwq")
+    #dataset = datasets.load_dataset(cwq_dataset_path)
     dataset = datasets.concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
     
     q_embs = torch.load(f'{path}/q_embs.pt')
@@ -175,9 +175,9 @@ def extract_node_ids(file_path):
 
 if __name__ == '__main__':
 
-    #preprocess()
+    preprocess()
 
-    dataset = WebQSPDataset()
+    dataset = CWQDataset()
 
     for i in range(len(dataset)):
         data = dataset[i]

@@ -9,7 +9,7 @@ from src.utils.lm_modeling import load_model, load_text2embedding
 
 
 model_name = 'gte'
-path = 'dataset/webqsp'
+path = 'dataset/cwq'
 path_nodes = f'{path}/nodes'
 path_edges = f'{path}/edges'
 path_graphs = f'{path}/graphs'
@@ -20,12 +20,12 @@ HF_DATASETS_DIR = os.path.join(HF_DIR, "datasets")
 os.makedirs(HF_DIR, exist_ok=True)
 os.makedirs(HF_MODELS_DIR, exist_ok=True)
 os.makedirs(HF_DATASETS_DIR, exist_ok=True)
-webqsp_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-webqsp")
+cwq_dataset_path = os.path.join(HF_DATASETS_DIR, "RoG-cwq")
 
 
 
 def step_one():
-    dataset = load_dataset("rmanluo/RoG-webqsp")
+    dataset = load_dataset("rmanluo/RoG-cwq")
     #dataset = load_dataset(webqsp_dataset_path)
     dataset = concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
 
@@ -53,7 +53,7 @@ def step_one():
 
 def generate_split():
 
-    dataset = load_dataset("rmanluo/RoG-webqsp")
+    dataset = load_dataset("rmanluo/RoG-cwq")
     #dataset = load_dataset(webqsp_dataset_path)
 
     train_indices = np.arange(len(dataset['train']))
@@ -83,7 +83,7 @@ def generate_split():
 
 def step_two():
     print('Loading dataset...')
-    dataset = load_dataset("rmanluo/RoG-webqsp")
+    dataset = load_dataset("rmanluo/RoG-cwq")
     dataset = concatenate_datasets([dataset['train'], dataset['validation'], dataset['test']])
     questions = [i['question'] for i in dataset]
 
@@ -155,6 +155,8 @@ def step_two():
     print('Encoding graphs...')
     os.makedirs(path_graphs, exist_ok=True)
     for index in tqdm(range(num_graphs)):
+        if os.path.exists(f'{path_graphs}/{index}.pt'):
+            continue
         nodes = pd.read_csv(f'{path_nodes}/{index}.csv')
         edges = pd.read_csv(f'{path_edges}/{index}.csv')
         nodes['node_attr'] = nodes['node_attr'].fillna("")
@@ -176,6 +178,6 @@ def step_two():
 
 
 if __name__ == '__main__':
-    step_one()
+    #step_one()
     step_two()
     generate_split()

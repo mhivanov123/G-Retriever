@@ -1,8 +1,26 @@
 import torch
 import torch.nn.functional as F
 import pandas as pd
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import pickle
+from src.dataset.webqsp import WebQSPDataset
+import networkx as nx
+from torch_geometric.utils import to_networkx
+
+def check_shortest_path_reachability(G, q_nodes, a_nodes, shortest_path_nodes):
+    # Induce the subgraph
+    subG = G.subgraph(shortest_path_nodes)
+    reachable = set()
+    for q in q_nodes:
+        # BFS from q in the subgraph
+        for a in a_nodes:
+            if nx.has_path(subG, q, a):
+                reachable.add(a)
+    # All a_nodes must be reachable
+    all_reachable = all(a in reachable for a in a_nodes)
+    return all_reachable, reachable
+
+
 
 def load_embeddings(file_path):
     embeddings = torch.load(file_path)
@@ -83,9 +101,47 @@ def load_pickle(file_path):
 
 
 if __name__ == "__main__":
-    embeddings = load_embeddings("/home/gridsan/mhadjiivanov/meng/SubgraphRAG/retrieve/data_files/webqsp/emb/gte-large-en-v1.5/val.pth")
-    embs = embeddings['WebQTrn-2056'].keys()
-    print(embs)
+    dataset = WebQSPDataset(directed=True, triple=True)
+
+    idx_split = dataset.get_idx_split()
+    train_indices = idx_split['train']
+    val_indices = idx_split['val']
+
+    two_hop = 0
+    valid_2_hop = 0
+    for idx in val_indices:
+        sample = dataset[idx]
+        if sample is None:
+            continue
+        q_nodes = sample['q_idx']
+        a_nodes = sample['a_idx']
+        shortest_path_nodes = sample['shortest_path_nodes']
+
+        non_a_or_q_nodes = [node for node in shortest_path_nodes if node not in q_nodes and node not in a_nodes]
+        if not a_nodes or not q_nodes:
+            continue
+        
+        valid_2_hop += 1
+        if non_a_or_q_nodes:
+            two_hop += 1
+            
+        
+
+        '''nxG = to_networkx(sample['graph'], to_undirected=True)
+        all_reachable, reachable = check_shortest_path_reachability(nxG, q_nodes, a_nodes, shortest_path_nodes)
+        if not all_reachable:
+            print("Some a_nodes are not reachable from q_nodes using only shortest_path_nodes:", set(a_nodes) - reachable)
+            
+
+        if not a_nodes:
+            print(f"No answer nodes for {idx}")
+        if not q_nodes:
+            print(f"No question nodes for {idx}")
+        if not shortest_path_nodes:
+            print(f"No shortest path nodes for {idx}") 
+        if not non_a_or_q_nodes:
+            print(f"No non a or q nodes for {idx}")'''
+    print(f"2-hop perc: {two_hop/valid_2_hop}")
     # print(embs.shape)
     # avg_cos_sim = average_cosine_similarity(embs)
     # print(avg_cos_sim)

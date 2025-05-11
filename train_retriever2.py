@@ -8,7 +8,7 @@ import random
 from src.models.retrieval_policy import RetrievalPolicy, RetrievalPolicyTriple, RetrievalPolicyTriple2, SL_warmup_policy, SL_classifier, Policy, Policy_test, Policy_freeze_then_train
 from src.models.rl_retriever import RetrievalTrainer, build_pretrain_trajectory
 import torch.nn.functional as F
-from src.dataset.webqsp import WebQSPDataset
+from src.dataset.webqsp import WebQSPDataset, CWQDataset
 import logging
 from pathlib import Path
 from torch.utils.data import DataLoader
@@ -16,6 +16,8 @@ import torch.multiprocessing as mp
 from torch.multiprocessing import Pool
 import torch.nn as nn
 import torch.optim as optim
+
+torch.cuda.empty_cache()
 
 HF_DIR = "hf"
 HF_MODELS_DIR = os.path.join(HF_DIR, "models")
@@ -123,7 +125,10 @@ def main():
         wandb.init(project=args.wandb_project, config=vars(args))
     
     # Initialize dataset
-    dataset = WebQSPDataset(directed=args.directed, triple=args.triple_graph)
+    if args.dataset == 'webqsp':
+        dataset = WebQSPDataset(directed=args.directed, triple=args.triple_graph)
+    elif args.dataset == 'cwq':
+        dataset = CWQDataset(directed=args.directed, triple=args.triple_graph)
     idx_split = dataset.get_idx_split()
 
     train_indices = idx_split['train']
@@ -147,16 +152,15 @@ def main():
     logger.info("Pretraining Start")
 
     sl_classifier = SL_classifier(node_dim=args.node_dim, hidden_dim=args.hidden_dim).to(device)
-    test_sl_classifier = SL_classifier(node_dim=args.node_dim, hidden_dim=args.hidden_dim).to(device)
-    sl_optimizer = torch.optim.Adam(sl_classifier.parameters(), lr=1e-4)
+    #test_sl_classifier = SL_classifier(node_dim=args.node_dim, hidden_dim=args.hidden_dim).to(device)
+    #sl_optimizer = torch.optim.Adam(sl_classifier.parameters(), lr=1e-4)
 
-    if args.use_pretrained_classifier:
-        if args.pretrained_classifier_path is not None:
-            sl_classifier.load_state_dict(torch.load(args.pretrained_classifier_path))
-            test_sl_classifier.load_state_dict(torch.load(args.pretrained_classifier_path))
-        else:
-            sl_classifier.load_state_dict(torch.load(checkpoint_dir / "SL_classifier.pt"))
-            test_sl_classifier.load_state_dict(torch.load(checkpoint_dir / "SL_classifier.pt"))
+    if args.pretrained_classifier_path is not None:
+        sl_classifier.load_state_dict(torch.load(args.pretrained_classifier_path))
+        #test_sl_classifier.load_state_dict(torch.load(args.pretrained_classifier_path))
+    else:
+        sl_classifier.load_state_dict(torch.load(checkpoint_dir / "SL_classifier.pt"))
+            #test_sl_classifier.load_state_dict(torch.load(checkpoint_dir / "SL_classifier.pt"))
 
     if args.skip_pretrain:
         logger.info("Skipping pretraining")
@@ -176,7 +180,7 @@ def main():
     #policy_net = Policy(pretrained_classifier=sl_classifier, node_dim=args.node_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
 
     policy_net = Policy_freeze_then_train(pretrained_classifier=sl_classifier, node_dim=args.node_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
-    policy_net_test = Policy_test(pretrained_classifier=test_sl_classifier, node_dim=args.node_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
+    #policy_net_test = Policy_test(pretrained_classifier=test_sl_classifier, node_dim=args.node_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
     
     for param in policy_net.parameters():
         param.requires_grad = True
@@ -184,10 +188,10 @@ def main():
     for param in policy_net.pretrained_classifier.parameters():
         param.requires_grad = False
 
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, policy_net.parameters()), lr=1e-3)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, policy_net.parameters()), lr=args.learning_rate)
 
     #train_value_head_test(policy_net, optimizer, dataset, train_indices, val_indices, device, logger, args, checkpoint_dir)
-    train_value_head(policy_net, policy_net_test, optimizer, dataset, train_indices, val_indices, device, logger, args, checkpoint_dir)
+    #train_value_head(policy_net, policy_net_test, optimizer, dataset, train_indices, val_indices, device, logger, args, checkpoint_dir)
     
     trainer = RetrievalTrainer(
         policy_net,
@@ -206,6 +210,10 @@ def main():
     logger.info("Policy Training Start")
     # Training loop
     for epoch in range(args.num_epochs):
+        # Shuffle training indices at the beginning of each epoch
+        # This helps prevent overfitting and improves generalization
+        random.shuffle(train_indices)
+        logger.info(f"Shuffled {len(train_indices)} training indices for epoch {epoch}")
         # Update current epoch in trainer for annealing calculation
         trainer.set_current_epoch(epoch)
         
@@ -257,8 +265,10 @@ def main():
                 logger.info(f"Epoch {epoch}, {len(train_stats)-100} - {len(train_stats)}, Train stats")
                 avg_train_stats = {
                 k: sum(s[k] for s in train_stats[-100:]) / len(train_stats[-100:])
-                for k in train_stats[-100:][0].keys()
+                for k in train_stats[-100:][0].keys() if k != 'entropy'
                 }
+                avg_entropy = sum([sum(s['entropy']) for s in train_stats[-100:]]) / sum([len(s['entropy']) for s in train_stats[-100:]])
+
                 logger.info(f"  Loss: {avg_train_stats['loss']:.4f}")
                 logger.info(f"  Policy Loss: {avg_train_stats['policy_loss']:.4f}")
                 logger.info(f"  Value Loss: {avg_train_stats['value_loss']:.4f}")
@@ -271,6 +281,7 @@ def main():
                 logger.info(f"  Perc Any Answer Node Reached: {avg_train_stats['perc_any_answer_node_reached']:.2f}")
                 logger.info(f"  Visited Nodes: {avg_train_stats['visited_nodes']:.2f}")
                 logger.info(f"  Visited Edges: {avg_train_stats['visited_edges']:.2f}")
+                logger.info(f"  Avg Entropy: {avg_entropy:.4f}")
 
         logger.info(f"Epoch {epoch} stats")
         
@@ -278,13 +289,14 @@ def main():
         if train_stats:
             avg_train_stats = {
                 k: sum(s[k] for s in train_stats) / len(train_stats)
-                for k in train_stats[0].keys()
+                for k in train_stats[0].keys() if k != 'entropy'
             }
+            avg_entropy = sum([sum(s['entropy']) for s in train_stats]) / sum([len(s['entropy']) for s in train_stats])
             logger.info(f"Epoch {epoch} - Training:")
             logger.info(f"  Loss: {avg_train_stats['loss']:.4f}")
             logger.info(f"  Policy Loss: {avg_train_stats['policy_loss']:.4f}")
             logger.info(f"  Value Loss: {avg_train_stats['value_loss']:.4f}")
-            logger.info(f"  Entropy: {avg_train_stats['entropy_loss']:.4f}")
+            logger.info(f"  Entropy Loss: {avg_train_stats['entropy_loss']:.4f}")
             logger.info(f"  Reward: {avg_train_stats['reward']:.4f}")
             logger.info(f"  Steps: {avg_train_stats['steps']:.2f}")
             #logger.info(f"  Correct Nodes: {avg_train_stats['correct_nodes']:.2f}")
@@ -293,7 +305,7 @@ def main():
             logger.info(f"  Perc Any Answer Node Reached: {avg_train_stats['perc_any_answer_node_reached']:.2f}")
             logger.info(f"  Visited Nodes: {avg_train_stats['visited_nodes']:.2f}")
             logger.info(f"  Visited Edges: {avg_train_stats['visited_edges']:.2f}")
-            
+            logger.info(f"  Avg Entropy: {avg_entropy:.4f}")
             if args.use_wandb:
                 wandb.log({f"train/{k}": v for k, v in avg_train_stats.items()})
         else:
@@ -319,6 +331,10 @@ def main():
                 if not args.triple_graph and (q_nodes is None or len(q_nodes) == 0 or a_nodes is None or len(a_nodes) == 0):
                     logger.warning("No question or answer nodes in this validation sample")
                     continue
+
+                if q_nodes is None or len(q_nodes) == 0 or a_nodes is None or len(a_nodes) == 0:
+                    logger.warning("No question or answer nodes in this validation sample")
+                    continue    
                 
                 # Get subgraph through inference
                 visited_nodes, visited_edges = trainer.inference_step(
@@ -395,7 +411,8 @@ def pretrain_classifier(sl_classifier, sl_optimizer, dataset, train_indices, val
     for epoch in range(args.sl_epochs):
         epoch_loss = 0
 
-        for idx in train_indices:
+        for i in tqdm(range(len(train_indices))):
+            idx = train_indices[i]
 
             sample = dataset[idx]
             if sample is None:
@@ -417,7 +434,8 @@ def pretrain_classifier(sl_classifier, sl_optimizer, dataset, train_indices, val
             
             y = trajectory['y']
 
-            pos_w = torch.tensor(y.shape[0] / y.sum().item(), device=device)
+            pos_weight_value = y.shape[0] / max(float(y.sum()), 1.0)
+            pos_w = torch.tensor(pos_weight_value, device=device)
             criterion = nn.BCEWithLogitsLoss(pos_weight=pos_w, reduction='sum')  # w0 is implicitly 1
             loss = criterion(y_pred.squeeze(-1), y.float()) / y.shape[0]
 

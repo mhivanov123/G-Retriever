@@ -611,7 +611,7 @@ class Policy_test(nn.Module):
             logits = logits + torch.log(action_bias + 1e-10)
 
         probs = F.softmax(logits, dim=-1)
-        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
+        entropy = -(probs * torch.log(probs[action_mask] + 1e-10)).sum(dim=-1).mean()
 
         state_value = self.critic(triple_features, action_mask)
 
@@ -692,7 +692,7 @@ class Policy_freeze_then_train(nn.Module):
             logits = logits + torch.log(action_bias + 1e-10)
 
         probs = F.softmax(logits, dim=-1)
-        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
+        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
 
         state_value = self.critic(triple_features, action_mask)
 

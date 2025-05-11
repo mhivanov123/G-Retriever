@@ -17,6 +17,8 @@ from torch.multiprocessing import Pool
 import torch.nn as nn
 import torch.optim as optim
 
+torch.cuda.empty_cache()
+
 HF_DIR = "hf"
 HF_MODELS_DIR = os.path.join(HF_DIR, "models")
 HF_DATASETS_DIR = os.path.join(HF_DIR, "datasets")
@@ -59,6 +61,17 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value")
     
+    # Teacher forcing parameters
+    parser.add_argument("--tf_start_bias", type=float, default=10.0, help="Initial teacher forcing bias")
+    parser.add_argument("--tf_end_bias", type=float, default=1.0, help="Final teacher forcing bias")
+    parser.add_argument("--tf_total_epochs", type=int, default=50, help="Total epochs over which to anneal teacher forcing")
+    parser.add_argument("--tf_schedule", type=str, default="linear", choices=["linear", "exp", "cosine"], help="Annealing schedule type")
+    
+    # PPO parameters
+    parser.add_argument("--ppo_epochs", type=int, default=4, help="Number of PPO epochs")
+    parser.add_argument("--ppo_batch_size", type=int, default=8, help="Number of PPO batch size")
+    parser.add_argument("--ppo_minibatch_size", type=int, default=8, help="Number of PPO minibatch size")
+
     # SL parameters
     parser.add_argument("--sl_epochs", type=int, default=5, help="Number of SL epochs")
     parser.add_argument("--sl_batch_size", type=int, default=8, help="Number of SL batch size")
@@ -67,6 +80,10 @@ def parse_args():
     # Parallel parameters
     parser.add_argument("--num_workers", type=int, default=4, help="Number of parallel workers")
     
+    # Curriculum parameters
+    parser.add_argument("--curriculum", type=float, default=float('inf'), help="Curriculum for the model")
+    parser.add_argument("--curriculum_perc", type=float, default=0.2, help="Percentage of epochs to use curriculum")
+
     # Paths and logging
     parser.add_argument("--save_dir", type=str, default="./experiments", help="Directory to save logs and checkpoints")
     parser.add_argument("--model_name", type=str, default="GLASS_GCN", help="Name for the model")
@@ -108,13 +125,11 @@ def main():
         wandb.init(project=args.wandb_project, config=vars(args))
     
     # Initialize dataset
-    if args.dataset == 'webqsp':
-        dataset = WebQSPDataset(directed=args.directed, triple=args.triple_graph)
-    elif args.dataset == 'cwq':
-        dataset = CWQDataset(directed=args.directed, triple=args.triple_graph)
+    dataset = WebQSPDataset(directed=args.directed, triple=args.triple_graph)
     idx_split = dataset.get_idx_split()
 
     train_indices = idx_split['train']
+    #train_indices = []
     val_indices = idx_split['val']
     
     node_dim = args.node_dim
@@ -131,30 +146,37 @@ def main():
     best_val_reward = float('-inf')
 
     # Pretrain
-    logger.info("Pretraining Start")
-
     sl_classifier = SL_classifier(node_dim=args.node_dim, hidden_dim=args.hidden_dim).to(device)
-    sl_optimizer = torch.optim.Adam(sl_classifier.parameters(), lr=args.learning_rate)
 
-    pretrain_classifier(sl_classifier, sl_optimizer, dataset, train_indices, val_indices, device, logger, args, checkpoint_dir)
+    if args.pretrained_classifier_path is not None:
+        sl_classifier.load_state_dict(torch.load(args.pretrained_classifier_path))
+        #test_sl_classifier.load_state_dict(torch.load(args.pretrained_classifier_path))
+    else:
+        sl_classifier.load_state_dict(torch.load(checkpoint_dir / "SL_classifier.pt"))
 
-    logger.info("Pretraining End")
+    policy_net = Policy_freeze_then_train(pretrained_classifier=sl_classifier, node_dim=args.node_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
+    checkpoint = torch.load(checkpoint_dir / "best_model.pt", map_location=device)
+    policy_net.load_state_dict(checkpoint["model_state_dict"])
+    #policy_net = Policy_test(pretrained_classifier=sl_classifier, node_dim=args.node_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
 
-    logger.info("Evaluate SL classifier")
-
-    policy_net = Policy_test(pretrained_classifier=sl_classifier, node_dim=args.node_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
-    
+    optimizer = None #torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
     trainer = RetrievalTrainer(
         policy_net,
         optimizer,
+        ppo_epochs=args.ppo_epochs,
+        ppo_batch_size=args.ppo_batch_size,
+        ppo_minibatch_size=args.ppo_minibatch_size,
+        tf_start_bias=args.tf_start_bias,
+        tf_end_bias=args.tf_end_bias, 
+        tf_total_epochs=args.tf_total_epochs,
         directed=args.directed,
-        triple_graph=args.triple_graph
+        triple_graph=args.triple_graph,
+        num_workers=args.num_workers
     )
-    
-    # Validation
+
     val_stats = []
     policy_net.eval()
-    
+        
     with torch.no_grad():
         for idx in val_indices:
             sample = dataset[idx]
@@ -167,10 +189,16 @@ def main():
             q_nodes = sample['q_idx'] if 'q_idx' in sample else None
             a_nodes = sample['a_idx'] if 'a_idx' in sample else None 
             shortest_path_nodes = sample['shortest_path_nodes'] if 'shortest_path_nodes' in sample else None
+
+            non_a_or_q_nodes = [node for node in shortest_path_nodes if node not in q_nodes and node not in a_nodes]
             
             if not args.triple_graph and (q_nodes is None or len(q_nodes) == 0 or a_nodes is None or len(a_nodes) == 0):
                 logger.warning("No question or answer nodes in this validation sample")
                 continue
+
+            if q_nodes is None or len(q_nodes) == 0 or a_nodes is None or len(a_nodes) == 0:
+                logger.warning("No question or answer nodes in this validation sample")
+                continue    
             
             # Get subgraph through inference
             visited_nodes, visited_edges = trainer.inference_step(
@@ -181,6 +209,11 @@ def main():
             # Calculate success and stats
             nodes_in_subgraph = sum(1 for node in shortest_path_nodes if node in visited_nodes) if shortest_path_nodes else 0
             nodes_not_in_subgraph = sum(1 for node in shortest_path_nodes if node not in visited_nodes) if shortest_path_nodes else 0
+            subgraph_recall = nodes_in_subgraph / len(shortest_path_nodes) if shortest_path_nodes else 0
+
+
+            two_hop_nodes = sum(1 for node in non_a_or_q_nodes if node in visited_nodes) if non_a_or_q_nodes else 0
+            two_hop_recall = two_hop_nodes / len(non_a_or_q_nodes) if non_a_or_q_nodes else 0
             
             if shortest_path_nodes:
                 nodes_in_subgraph_percentage = nodes_in_subgraph / len(visited_nodes) if visited_nodes else 0
@@ -189,108 +222,44 @@ def main():
 
             # Check if any target nodes were reached
             success = any(node in visited_nodes for node in a_nodes)
+            if non_a_or_q_nodes:
+                two_hop_success = any(node in visited_nodes for node in a_nodes)
+            
             
             val_stats.append({
                 'success': 1.0 if success else 0.0,
                 'nodes': len(visited_nodes),
                 'edges': len(visited_edges),
-                'nodes_in_subgraph_percentage': nodes_in_subgraph_percentage
+                'nodes_in_subgraph_percentage': nodes_in_subgraph_percentage,
+                'subgraph_recall': subgraph_recall,
+                'two_hop_recall': two_hop_recall if non_a_or_q_nodes else None,
+                'two_hop_success': two_hop_success if non_a_or_q_nodes else None
             })
     
     # Compute validation metrics
     if val_stats:
         avg_val_stats = {
             k: sum(s[k] for s in val_stats) / len(val_stats)
-            for k in val_stats[0].keys()
+            for k in val_stats[0].keys() if k != 'two_hop_recall' and k != 'two_hop_success'
         }
-        logger.info(f"Epoch {epoch} - Validation:")
+        avg_two_hop_recall = sum(s['two_hop_recall'] for s in val_stats if s['two_hop_recall'] is not None) / len([s for s in val_stats if s['two_hop_recall'] is not None])
+        avg_two_hop_success = sum(s['two_hop_success'] for s in val_stats if s['two_hop_success'] is not None) / len([s for s in val_stats if s['two_hop_success'] is not None])
+        logger.info(f"Validation:")
         logger.info(f"  Success Rate: {avg_val_stats['success']:.4f}")
-        logger.info(f"  Avg Nodes: {avg_val_stats['nodes']:.2f}")
-        logger.info(f"  Avg Edges: {avg_val_stats['edges']:.2f}")
-        logger.info(f"  Avg Nodes in Subgraph: {avg_val_stats['nodes_in_subgraph_percentage']:.2f}")
-    else:
-        logger.warning("No successful validation steps")
-
-def pretrain_classifier(sl_classifier, sl_optimizer, dataset, train_indices, val_indices, device, logger, args, checkpoint_dir):
-    for epoch in range(args.sl_epochs):
-        epoch_loss = 0
-
-        for i in tqdm(range(len(train_indices))):
-            idx = train_indices[i]
-
-            sample = dataset[idx]
-            if sample is None:
-                logger.warning(f"Sample {idx} is None")
-                continue
-            trajectory = build_pretrain_trajectory(sample, device, directed=args.directed, triple_graph=args.triple_graph)
-            if trajectory is None:
-                logger.warning(f"Trajectory {idx} is None")
-                continue
-            
-            sl_optimizer.zero_grad()
-
-            y_pred, _, _, _, _ = sl_classifier(x_ = trajectory['x'].float(), 
-                                        edge_index = trajectory['edge_index'].long(), 
-                                        edge_attr = trajectory['edge_attr'].float(), 
-                                        question_embeddings = trajectory['question_embeddings'], 
-                                        question_mask = trajectory['question_mask']
-                                        )
-            
-            y = trajectory['y']
-
-            pos_weight_value = y.shape[0] / max(float(y.sum()), 1.0)
-            pos_w = torch.tensor(pos_weight_value, device=device)
-            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_w, reduction='sum')  # w0 is implicitly 1
-            loss = criterion(y_pred.squeeze(-1), y.float()) / y.shape[0]
-
-            loss.backward()
-            sl_optimizer.step()
-            epoch_loss += loss.item()
-            
-        logger.info(f"Epoch {epoch} loss: {epoch_loss}")
-
-        sl_classifier.eval()
+        logger.info(f"  Avg Nodes: {avg_val_stats['nodes']:.4f}")
+        logger.info(f"  Avg Edges: {avg_val_stats['edges']:.4f}")
+        logger.info(f"  Avg Nodes in Subgraph: {avg_val_stats['nodes_in_subgraph_percentage']:.4f}")
+        logger.info(f"  Avg Subgraph Recall: {avg_val_stats['subgraph_recall']:.4f}")
+        logger.info(f"  Avg Two-Hop Recall: {avg_two_hop_recall:.4f}")
+        logger.info(f"  Avg Two-Hop Success: {avg_two_hop_success:.4f}")
+        if args.use_wandb:
+            wandb.log({f"val/{k}": v for k, v in avg_val_stats.items()})
         
-        tp, fp, tn, fn = 0, 0, 0, 0
-        total_samples = 0
-        for idx in val_indices:
-            sample = dataset[idx]
-
-            if sample is None:
-                logger.warning(f"Sample {idx} is None")
-                continue
-            trajectory = build_pretrain_trajectory(sample, device, directed=args.directed, triple_graph=args.triple_graph)
-            if trajectory is None:
-                logger.warning(f"Trajectory {idx} is None")
-                continue
-
-            y_pred, _, _, _, _ = sl_classifier(x_ = trajectory['x'].float(), 
-                                        edge_index = trajectory['edge_index'].long(), 
-                                        edge_attr = trajectory['edge_attr'].float(), 
-                                        question_embeddings = trajectory['question_embeddings'], 
-                                        question_mask = trajectory['question_mask'])
-            
-            y = trajectory['y']
-
-            predictions = (y_pred > 0.5).float().squeeze(-1)
-            tp += ((predictions == 1) & (y == 1)).sum().item()
-            fp += ((predictions == 1) & (y == 0)).sum().item()
-            tn += ((predictions == 0) & (y == 0)).sum().item()
-            fn += ((predictions == 0) & (y == 1)).sum().item()
-            total_samples += y.shape[0]
-
-        precision = tp / max(tp + fp, 1e-6)
-        recall = tp / max(tp + fn, 1e-6)
-        f1 = 2 * (precision * recall) / max(precision + recall, 1e-6)
-        logger.info(f"Epoch {epoch} - Validation:")
-        logger.info(f"  Precision: {precision:.4f}")
-        logger.info(f"  Recall: {recall:.4f}")
-        logger.info(f"  F1: {f1:.4f}")
-        logger.info(f"True positives: {tp}, False positives: {fp}, True negatives: {tn}, False negatives: {fn}")
-
-        sl_classifier.train()
-
-    torch.save(sl_classifier.state_dict(), checkpoint_dir / "SL_classifier.pt")
+    else:
+        logger.warning("No successful validation steps in this epoch")
+    
+    if args.use_wandb:
+        wandb.finish()
 
 if __name__ == "__main__":
     # Set multiprocessing start method

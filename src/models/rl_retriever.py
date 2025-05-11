@@ -67,14 +67,17 @@ class RetrievalState:
         
         # Compute reward for the action
         if self.shortest_path_nodes is not None:
-            if action_node in self.a_nodes:
-                reward = 10.0  # Keep high reward for finding answer
+            if action_node in self.a_nodes or action_node in self.shortest_path_nodes:
+                reward = 1.0  # Keep high reward for finding answer
             elif action_node in self.shortest_path_nodes:
                 # Scale intermediate rewards based on path progress
                 progress = len(self.visited_nodes.intersection(self.shortest_path_nodes)) / len(self.shortest_path_nodes)
                 reward = 1.0 + 4.0 * progress  # Gradually increase rewards as we make progress
+                
             else:
-                reward = -0.1
+                progress = len(self.visited_nodes.intersection(self.shortest_path_nodes)) / len(self.shortest_path_nodes)
+                reward = progress - 1
+                #reward = -0.5
         
         return reward, False
     
@@ -194,11 +197,9 @@ class RetrievalTrainer:
         self.trajectories = []
         
         # Optimizer
-        if optimizer is None:
-            self.optimizer = torch.optim.Adam(policy_net.parameters(), lr=1e-4)
-        else:
+        if optimizer is not None:
             self.optimizer = optimizer
-    
+        
     def set_teacher_forcing(self, use_teacher_forcing):
         """Set whether to use teacher forcing"""
 
@@ -226,7 +227,7 @@ class RetrievalTrainer:
                               directed=directed, triple_graph=triple_graph)
         
         if state.shortest_path_nodes is None or len(state.shortest_path_nodes) == 0 or len(state.a_nodes) == 0 or len(state.q_nodes) == 0:
-            return None
+            return None, None
         
         # Containers for trajectory
         states = []
@@ -236,6 +237,7 @@ class RetrievalTrainer:
         values = []
         rewards = []
         masks = []
+        entropies = []
         
         
         # Collect trajectory
@@ -290,7 +292,7 @@ class RetrievalTrainer:
             action_log_probs.append(node_dist.log_prob(action).detach())
             probs.append(node_probs.detach())  # Store the entire probability distribution
             values.append(state_value.detach())
-            
+            entropies.append(entropy.detach()/torch.log(valid_mask.sum()))
             # Execute action
             reward, done = state.step(action)
             rewards.append(reward)
@@ -318,7 +320,8 @@ class RetrievalTrainer:
             'visited_edges': len(state.visited_edges),
             'perc_correct_nodes': sum(node in state.shortest_path_nodes for node in state.visited_nodes)/max(1, len(state.shortest_path_nodes)),
             'perc_answer_nodes_reached': sum(node in state.a_nodes for node in state.visited_nodes)/max(1, len(state.a_nodes)),
-            'perc_any_answer_node_reached': sum(node in state.a_nodes for node in state.visited_nodes) > 0
+            'perc_any_answer_node_reached': sum(node in state.a_nodes for node in state.visited_nodes) > 0,
+            'entropy': entropies
         }
         
         return trajectory, stats
@@ -360,6 +363,16 @@ class RetrievalTrainer:
     
     def _batch_update(self):
         """Perform PPO update on all trajectories in the buffer"""
+        # hyper‑params
+
+        batch_size_steps   = 4096        # total *steps* before doing PPO
+        ppo_epochs         = self.ppo_epochs
+        minibatch_size     = self.ppo_minibatch_size         # logical minibatch for one optimizer.step()
+        forward_chunk_size = 1           # how many graphs fit on the GPU at once
+        clip_eps           = 0.2
+        value_coef         = 0.5
+        entropy_coef       = 0.01
+
         device = next(self.policy_net.parameters()).device
         
         # Initialize loss accumulators
@@ -392,144 +405,119 @@ class RetrievalTrainer:
             # Normalize advantages in each trajectory
             for trajectory in self.trajectories:
                 trajectory['advantages'] = [(adv - mean_adv) / std_adv for adv in trajectory['advantages']]
+
+         # Collect all data from trajectories for batch processing
+        batch_states = []
+        batch_actions = []
+        batch_old_log_probs = []
+        batch_probs = []
+        batch_returns = []
+        batch_advantages = []
+        
+        # Gather data from all trajectories
+        for trajectory in self.trajectories:
+            batch_states.extend(trajectory['states'])
+            batch_actions.extend(trajectory['actions'])
+            batch_old_log_probs.extend(trajectory['action_log_probs'])
+            batch_returns.extend(trajectory['returns'])
+            batch_advantages.extend(trajectory['advantages'])
+            batch_probs.extend(trajectory['probs'])
+
+        # Convert to tensors where appropriate
+        batch_actions = torch.stack(batch_actions)
+        batch_old_log_probs = torch.stack(batch_old_log_probs)
+        batch_returns = torch.tensor(batch_returns, device=device)
+        batch_advantages = torch.tensor(batch_advantages, device=device)
+        
         
         # Perform multiple epochs of PPO updates
-        for epoch in range(self.ppo_epochs):
-            # Collect all data from trajectories for batch processing
-            batch_states = []
-            batch_actions = []
-            batch_old_log_probs = []
-            batch_probs = []
-            batch_returns = []
-            batch_advantages = []
-            
-            # Gather data from all trajectories
-            for trajectory in self.trajectories:
-                batch_states.extend(trajectory['states'])
-                batch_actions.extend(trajectory['actions'])
-                batch_old_log_probs.extend(trajectory['action_log_probs'])
-                batch_returns.extend(trajectory['returns'])
-                batch_advantages.extend(trajectory['advantages'])
-                batch_probs.extend(trajectory['probs'])
-
-            # Convert to tensors where appropriate
-            batch_actions = torch.stack(batch_actions)
-            batch_old_log_probs = torch.stack(batch_old_log_probs)
-            batch_returns = torch.tensor(batch_returns, device=device)
-            batch_advantages = torch.tensor(batch_advantages, device=device)
-            
-            # Process in mini-batches to avoid memory issues
-            mini_batch_size = self.ppo_minibatch_size
+        for epoch in range(ppo_epochs):
             indices = torch.randperm(len(batch_states))
-            
-            #for start_idx in range(0, len(batch_states), mini_batch_size):
-            # Get mini-batch indices
-            mb_indices = indices[0:mini_batch_size]
-            
-            # Initialize loss components for this mini-batch
-            mb_policy_loss = 0
-            mb_value_loss = 0
-            mb_entropy_loss = 0
-            
-            # KL Divergence tracking for the batch
-            kl_divs = []
-            
-            # Zero gradients once for the mini-batch
-            self.optimizer.zero_grad()
-            
-            # Process each state in the mini-batch
-            for i in mb_indices:
-                state_info = batch_states[i]
-                
-                # Forward pass through policy network
-                action_probs, state_value, _, entropy = self.policy_net(
-                    state_info['x'].float().detach().requires_grad_(True),
-                    state_info['edge_index'].long(),
-                    state_info['edge_attr'].float().detach().requires_grad_(True),
-                    state_info['question_embeddings'].detach().requires_grad_(True) if state_info['question_embeddings'] is not None else None,
-                    subgraph_mask=state_info['subgraph_mask'],
-                    action_mask=state_info['action_mask'],
-                    action_bias=state_info['action_bias'],
-                    question_mask=state_info['question_mask'],
-                    use_checkpoint=True
-                )
-                
-                # Get log probability of the action that was taken
-                log_prob = torch.log(action_probs + 1e-10).gather(0, batch_actions[i].unsqueeze(0)).squeeze(0)
-                old_log_prob = batch_old_log_probs[i]
-                
-                # Compute KL divergence for just the selected action
-                old_prob = batch_probs[i] + 1e-10
-                new_prob = action_probs + 1e-10
-                
-                # KL(old || new) = old_prob * log(old_prob/new_prob)
-                with torch.no_grad():
-                    kl_state = (old_prob * (torch.log(old_prob) - torch.log(new_prob))).sum()
-                kl_divs.append(kl_state)
-                
-                # Calculate importance sampling ratio
-                ratio = torch.exp(log_prob - old_log_prob)
-                
-                # PPO clipped objective
-                clip_param = 0.01
-                surr1 = ratio * batch_advantages[i]
-                surr2 = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param) * batch_advantages[i]
-                policy_loss_i = -torch.min(surr1, surr2)
-                
-                # Value function loss
-                value_loss_i = F.mse_loss(state_value, batch_returns[i])
-                
-                # Entropy bonus
-                entropy_loss_i = -entropy
-                
-                # Accumulate losses for this mini-batch
-                mb_policy_loss += policy_loss_i
-                mb_value_loss += value_loss_i
-                mb_entropy_loss += entropy_loss_i
-            
-            # Average losses for this mini-batch
-            mb_size = len(mb_indices)
-            if mb_size > 0:
-                mb_policy_loss /= mb_size
-                mb_value_loss /= mb_size
-                mb_entropy_loss /= mb_size
-            
-            # Compute total loss
-            loss = mb_policy_loss + 0.5 * mb_value_loss + 0.01 * mb_entropy_loss
-            #loss = mb_policy_loss + 0.5 * mb_value_loss
-            # Backward pass and optimization step
-            loss.backward()
 
-            grad_norm_custom_gcn = 0.0
-            for p in self.policy_net.custom_GCN.parameters():
-                if p.grad is not None:
-                    grad_norm_custom_gcn += p.grad.data.norm(2).item() ** 2
-            grad_norm_custom_gcn = grad_norm_custom_gcn ** 0.5
+            for mb_start_idx in range(0, len(batch_states), minibatch_size):
+                mb_indices = indices[mb_start_idx:mb_start_idx+minibatch_size]
 
-            print(f"PPO Epoch {epoch}, Custom GCN grad norm: {grad_norm_custom_gcn:.6f}")
+                # Initialize loss components for this mini-batch
+                mb_policy_loss = 0
+                mb_value_loss = 0
+                mb_entropy_loss = 0
+                
+                # Zero gradients once for the mini-batch
+                self.optimizer.zero_grad()
+                
+                # Process each state in the mini-batch
+                for i in mb_indices:
+                    state_info = batch_states[i]
+                    x = state_info['x']
+                    edge_index = state_info['edge_index']
+                    edge_attr = state_info['edge_attr']
+                    question_embeddings = state_info['question_embeddings']
+                    subgraph_mask = state_info['subgraph_mask']
+                    action_mask = state_info['action_mask']
+                    action_bias = state_info['action_bias']
+                    question_mask = state_info['question_mask']
 
-            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1)
-            self.optimizer.step()
-            
-            # Log average KL divergence
-            if kl_divs:
-                avg_kl = sum(kl_divs) / len(kl_divs) 
-                print(f"PPO Epoch {epoch}, KL Divergence: {avg_kl:.6f}")
-            
-            # Accumulate losses for reporting
-            total_loss += loss.item()
-            policy_loss += mb_policy_loss.item()
-            value_loss += mb_value_loss.item()
-            entropy_loss += mb_entropy_loss.item()
+                    # Forward pass through policy network
+                    action_probs, state_value, _, entropy = self.policy_net(
+                        x.float().detach().requires_grad_(True),
+                        edge_index.long(),
+                        edge_attr.float().detach().requires_grad_(True),
+                        question_embeddings.detach().requires_grad_(True) if question_embeddings is not None else None,
+                        subgraph_mask=subgraph_mask,
+                        action_mask=action_mask,
+                        action_bias=action_bias,
+                        question_mask=question_mask,
+                        use_checkpoint=True
+                    )
+
+                    action = batch_actions[i]
+                    
+                    # Get log probability of the action that was taken
+                    log_prob = torch.log(action_probs + 1e-10).gather(0, action.unsqueeze(0)).squeeze(0)
+                    old_log_prob = batch_old_log_probs[i]
+
+                    advantage = batch_advantages[i]
+                    returns = batch_returns[i]
+                    
+                    # Calculate importance sampling ratio
+                    ratio = torch.exp(log_prob - old_log_prob)
+                    
+                    # PPO clipped objective
+                    surr1 = ratio * advantage
+                    surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantage
+
+                    policy_loss_i = -torch.min(surr1, surr2)
+                    value_loss_i = F.mse_loss(state_value, returns)
+                    entropy_loss_i = -entropy
+                    
+                    # Accumulate losses for this mini-batch
+                    mb_policy_loss += policy_loss_i
+                    mb_value_loss += value_loss_i
+                    mb_entropy_loss += entropy_loss_i
+                
+                # Compute total loss
+                loss = mb_policy_loss + value_coef * mb_value_loss + entropy_coef * mb_entropy_loss
+
+                # Backward pass and optimization step
+                (loss/len(mb_indices)).backward()
+
+                torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1)
+                self.optimizer.step()
+                torch.cuda.empty_cache()
+                
+                # Accumulate losses for reporting
+                total_loss += loss.item()
+                policy_loss += mb_policy_loss.item()
+                value_loss += mb_value_loss.item()
+                entropy_loss += mb_entropy_loss.item()
         
+        print()
         # Calculate average losses
-        num_mini_batches = (len(batch_states) + mini_batch_size - 1) // mini_batch_size
-        num_updates = num_mini_batches * self.ppo_epochs
-        if num_updates > 0:
-            total_loss /= num_updates
-            policy_loss /= num_updates
-            value_loss /= num_updates
-            entropy_loss /= num_updates
+        if len(batch_states) > 0:
+            total_loss /= len(batch_states)
+            policy_loss /= len(batch_states)
+            value_loss /= len(batch_states)
+            entropy_loss /= len(batch_states)
 
         return {
             'loss': total_loss,
@@ -610,7 +598,8 @@ class RetrievalTrainer:
             if done:
                 break
                 
-        return state.get_subgraph()
+        #return state.get_subgraph()
+        return state.get_answer()
     
     def _batch_update_reinforce(self):
         """Perform REINFORCE update on all trajectories in the buffer"""
@@ -668,6 +657,7 @@ class RetrievalTrainer:
         # ---------- 2. Prepare for policy gradient calculation ----------
         self.optimizer.zero_grad()
         policy_loss = 0.0
+        entropy_loss = 0.0
         total_valid_steps = 0
         
         # ---------- 3. Accumulate policy gradient loss ----------
@@ -688,15 +678,8 @@ class RetrievalTrainer:
                 edge_attr_tensor = state_info['edge_attr'].float().detach().requires_grad_(True)
                 q_emb_tensor = state_info['question_embeddings'].detach().requires_grad_(True) if state_info['question_embeddings'] is not None else None
                 
-                # Log input tensor information
-                '''print(f"Step {t} - Input tensors:")
-                print(f"  x_tensor requires_grad: {x_tensor.requires_grad}")
-                print(f"  edge_attr_tensor requires_grad: {edge_attr_tensor.requires_grad}")
-                if q_emb_tensor is not None:
-                    print(f"  q_emb_tensor requires_grad: {q_emb_tensor.requires_grad}")'''
-                
                 # Use these new tensors in the forward pass
-                action_probs, _, _, _ = self.policy_net(
+                action_probs, _, _, entropy = self.policy_net(
                     x_tensor,  # Use the tensor with gradients enabled
                     state_info['edge_index'].long(),  # Indexes don't need gradients
                     edge_attr_tensor,  # Use the tensor with gradients enabled
@@ -707,19 +690,12 @@ class RetrievalTrainer:
                     question_mask=state_info['question_mask']
                 )
                 
-                # Log output tensor information
-                '''print(f"  action_probs requires_grad: {action_probs.requires_grad}")
-                print(f"  action_probs has grad_fn: {action_probs.grad_fn is not None}")'''
-                
                 # CORE FIX: Use a different approach to extract the log probability
                 # This maintains gradient flow properly
                 action_idx = action.item()  # Convert to Python scalar
                 selected_prob = action_probs[action_idx]
                 log_prob = torch.log(torch.clamp(selected_prob, min=1e-10))
-                
-                # Log probability information
-                '''print(f"  log_prob requires_grad: {log_prob.requires_grad}")
-                print(f"  log_prob has grad_fn: {log_prob.grad_fn is not None}")'''
+
                 
                 # Convert G_t to tensor if needed
                 if not isinstance(G_t, torch.Tensor):
@@ -728,46 +704,21 @@ class RetrievalTrainer:
                 # Compute loss with proper gradient flow
                 step_loss = -log_prob * G_t
                 
-                # Log step loss information
-                '''print(f"  step_loss: {step_loss.item():.6f}")
-                print(f"  step_loss requires_grad: {step_loss.requires_grad}")
-                print(f"  step_loss has grad_fn: {step_loss.grad_fn is not None}")'''
-                
+                entropy_loss += entropy.item()
                 # Accumulate loss
-                policy_loss += step_loss
+                policy_loss += step_loss/max_steps
                 total_valid_steps += 1
         
         # ---------- 4. Perform single update ----------
         if total_valid_steps > 0:
             # Average loss over all steps
-            policy_loss /= total_valid_steps
-            
-            # Log final loss before backward
-            '''print(f"\n=== Final loss before backward ===")
-            print(f"  policy_loss: {policy_loss.item():.6f}")
-            print(f"  policy_loss requires_grad: {policy_loss.requires_grad}")
-            print(f"  policy_loss has grad_fn: {policy_loss.grad_fn is not None}")'''
-            
+            policy_loss /= len(valid_trajectories)
+            entropy_loss /= total_valid_steps
             # Backward pass (single call for all accumulated gradients)
             policy_loss.backward()
             
-            # Log gradients after backward
-            '''print("\n=== Gradients after backward ===")
-            for name, param in self.policy_net.named_parameters():
-                if param.requires_grad:
-                    if param.grad is not None:
-                        print(f"  {name}: grad_norm={param.grad.norm().item():.6f}")
-                    else:
-                        print(f"  {name}: grad=None")'''
-            
             # Gradient clipping for stability
             #torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
-            
-            # Log gradients after clipping
-            '''print("\n=== Gradients after clipping ===")
-            for name, param in self.policy_net.named_parameters():
-                if param.requires_grad and param.grad is not None:
-                    print(f"  {name}: grad_norm={param.grad.norm().item():.6f}")'''
             
             # Optimization step
             self.optimizer.step()
@@ -781,7 +732,7 @@ class RetrievalTrainer:
             'loss': loss_value,
             'policy_loss': loss_value,
             'value_loss': 0.0,
-            'entropy_loss': 0.0,
+            'entropy_loss': entropy_loss,
             'valid_steps': total_valid_steps,
             'valid_trajectories': len(valid_trajectories)
         }

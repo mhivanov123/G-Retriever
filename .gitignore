@@ -54,7 +54,7 @@ coverage.xml
 docs/_build/
 
 # dataset
-#dataset/
+dataset/
 dataset/**/[0-9]*.csv
 dataset/**/*.pt
 dataset/gqa/val_sceneGraphs.json
